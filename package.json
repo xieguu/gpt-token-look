@@ -1,0 +1,22 @@
+{
+  "name": "codex-token-lens",
+  "version": "1.0.0",
+  "description": "A privacy-first local dashboard for visualizing Codex token usage.",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check server.js && node --check app.js",
+    "test": "node --test"
+  },
+  "keywords": [
+    "codex",
+    "token-usage",
+    "dashboard",
+    "openai",
+    "local-first"
+  ]
+}

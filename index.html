@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#f5f7f2">
+  <meta name="description" content="本地优先的 Codex Token 用量可视化面板">
+  <title>Codex Token Lens</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="#" aria-label="Codex Token Lens 首页">
+        <span class="brand-mark" aria-hidden="true">
+          <span></span><span></span><span></span><span></span>
+        </span>
+        <span>
+          <strong>Token Lens</strong>
+          <small>CODEX USAGE</small>
+        </span>
+      </a>
+
+      <div class="topbar-actions">
+        <span class="status" id="sourceStatus"><i></i> 正在连接 Codex</span>
+        <button class="icon-button" id="themeToggle" type="button" aria-label="切换深色模式">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 3v2m0 14v2M3 12h2m14 0h2M5.64 5.64l1.42 1.42m9.88 9.88 1.42 1.42m0-12.72-1.42 1.42M7.06 16.94l-1.42 1.42"/>
+            <circle cx="12" cy="12" r="4"/>
+          </svg>
+        </button>
+        <button class="primary-button" id="refreshButton" type="button">
+          <span>↻</span> 刷新数据
+        </button>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div>
+          <p class="eyebrow">WORKSPACE OVERVIEW</p>
+          <h1>看清每一枚 Token<br>花在了哪里。</h1>
+          <p class="hero-copy">轻量追踪 Codex 会话消耗，掌握输入、输出与预算趋势。</p>
+        </div>
+        <div class="period-switch" role="group" aria-label="统计周期">
+          <button type="button" data-period="7">7 天</button>
+          <button type="button" class="active" data-period="30">30 天</button>
+          <button type="button" data-period="all">全部</button>
+        </div>
+      </section>
+
+      <section class="stats-grid" aria-label="Token 消耗概览">
+        <article class="stat-card stat-card-main">
+          <div class="card-label">
+            <span>总 Token 消耗</span>
+            <span class="metric-badge" id="changeBadge">近 30 天</span>
+          </div>
+          <div class="main-metric">
+            <strong id="totalTokens">0</strong>
+            <span>tokens</span>
+          </div>
+          <div class="split-bar" aria-hidden="true">
+            <span id="inputBar"></span>
+            <span id="outputBar"></span>
+          </div>
+          <div class="legend">
+            <span><i class="input-dot"></i>输入 <b id="inputTokens">0</b></span>
+            <span><i class="output-dot"></i>输出 <b id="outputTokens">0</b></span>
+          </div>
+        </article>
+
+        <article class="stat-card">
+          <div class="card-label">
+            <span>Codex 使用限额</span>
+            <span class="metric-badge" id="limitWindow">当前窗口</span>
+          </div>
+          <div class="budget-wrap">
+            <div class="budget-ring" id="budgetRing">
+              <div><strong id="budgetPercent">0%</strong><small>已使用</small></div>
+            </div>
+            <div class="budget-copy">
+              <strong id="budgetUsed">—</strong>
+              <span id="budgetTotal">来自 Codex 实时事件</span>
+              <small id="budgetRemaining">等待限额数据</small>
+            </div>
+          </div>
+        </article>
+
+        <article class="stat-card">
+          <div class="card-label"><span>平均每次会话</span><span class="mini-icon">↗</span></div>
+          <div class="secondary-metric"><strong id="averageTokens">0</strong><span>tokens</span></div>
+          <p class="muted" id="sessionSummary">共记录 0 次会话</p>
+          <div class="mini-bars" id="miniBars" aria-label="最近会话消耗图"></div>
+        </article>
+      </section>
+
+      <section class="content-grid">
+        <article class="panel chart-panel">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">USAGE TREND</p>
+              <h2>消耗趋势</h2>
+            </div>
+            <div class="chart-legend">
+              <span><i class="input-dot"></i>输入</span>
+              <span><i class="output-dot"></i>输出</span>
+            </div>
+          </div>
+          <div class="chart-wrap">
+            <div class="y-axis" id="yAxis" aria-hidden="true">
+              <span>0</span><span>0</span><span>0</span><span>0</span><span>0</span>
+            </div>
+            <div class="chart" id="usageChart" aria-label="每日 Token 消耗柱状图"></div>
+          </div>
+        </article>
+
+        <article class="panel insight-panel">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">QUICK INSIGHT</p>
+              <h2>使用洞察</h2>
+            </div>
+          </div>
+          <div class="insight-orb">
+            <span>⌁</span>
+          </div>
+          <p class="insight-text" id="insightText">添加会话记录后，这里会生成简单的使用建议。</p>
+          <div class="insight-row">
+            <span>最高消耗会话</span>
+            <strong id="peakSession">—</strong>
+          </div>
+          <div class="insight-row">
+            <span>输入 / 输出</span>
+            <strong id="tokenRatio">—</strong>
+          </div>
+        </article>
+      </section>
+
+      <section class="panel table-panel">
+        <div class="panel-heading table-heading">
+          <div>
+            <p class="eyebrow">RECENT SESSIONS</p>
+            <h2>最近会话</h2>
+          </div>
+          <span class="live-note" id="lastUpdated">等待首次同步</span>
+        </div>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>会话</th>
+                <th>日期</th>
+                <th>模型</th>
+                <th>输入</th>
+                <th>输出</th>
+                <th>合计</th>
+              </tr>
+            </thead>
+            <tbody id="sessionTable"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <span>Token Lens · 只读取本机 Codex Token 汇总，不读取对话正文</span>
+      <span id="sourcePath">~/.codex/sessions</span>
+    </footer>
+  </div>
+
+  <script src="./app.js"></script>
+</body>
+</html>
