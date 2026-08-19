@@ -1,9 +1,18 @@
 {
-  "name": "codex-token-lens",
+  "name": "gpt-token-look",
   "version": "1.0.0",
-  "description": "A privacy-first local dashboard for visualizing Codex token usage.",
+  "description": "A privacy-first local dashboard for visualizing Codex token usage, limits, and API-equivalent costs.",
   "private": true,
   "license": "MIT",
+  "author": "xieguu",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xieguu/gpt-token-look.git"
+  },
+  "bugs": {
+    "url": "https://github.com/xieguu/gpt-token-look/issues"
+  },
+  "homepage": "https://github.com/xieguu/gpt-token-look#readme",
   "engines": {
     "node": ">=18"
   },

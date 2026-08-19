@@ -8,7 +8,7 @@ const crypto = require("node:crypto");
 const HOST = "127.0.0.1";
 const PORT = process.env.TOKEN_LENS_PORT === undefined ? 4173 : Number(process.env.TOKEN_LENS_PORT);
 if (!Number.isInteger(PORT) || PORT < 0 || PORT > 65535) {
-  console.error("TOKEN_LENS_PORT 必须是 0 到 65535 之间的整数。");
+  console.error("TOKEN_LENS_PORT must be an integer between 0 and 65535.");
   process.exit(1);
 }
 
@@ -19,12 +19,15 @@ const INDEX_PATH = path.join(CODEX_DIR, "session_index.jsonl");
 const CACHE_DIR = process.env.TOKEN_LENS_CACHE_DIR || path.join(os.tmpdir(), "codex-token-lens");
 const CACHE_ID = crypto.createHash("sha256").update(CODEX_DIR).digest("hex").slice(0, 12);
 const CACHE_PATH = path.join(CACHE_DIR, `usage-${CACHE_ID}.json`);
-const PRICING_SOURCE = "https://developers.openai.com/api/docs/models/compare";
+const PRICING_SOURCE = "https://platform.openai.com/pricing";
+const PRICING_FILE = process.env.TOKEN_LENS_PRICING_FILE || "";
+const PRICING_JSON = process.env.TOKEN_LENS_PRICES_JSON || "";
 const DEFAULT_PRICES_PER_MILLION = [
-  { match: /gpt[-\s_]?5\.6[-\s_]?sol/i, label: "GPT-5.6 Sol", input: 5.00, cachedInput: 0.50, output: 30.00 },
-  { match: /gpt[-\s_]?5\.6[-\s_]?terra/i, label: "GPT-5.6 Terra", input: 2.00, cachedInput: 0.20, output: 12.00 },
-  { match: /gpt[-\s_]?5\.6[-\s_]?luna/i, label: "GPT-5.6 Luna", input: 0.20, cachedInput: 0.02, output: 1.20 }
+  { pattern: "gpt[-\\s_]?5\\.6[-\\s_]?sol", label: "GPT-5.6 Sol", input: 5.00, cachedInput: 0.50, cacheWriteInput: 6.25, output: 30.00 },
+  { pattern: "gpt[-\\s_]?5\\.6[-\\s_]?terra", label: "GPT-5.6 Terra", input: 2.50, cachedInput: 0.25, cacheWriteInput: 3.125, output: 15.00 },
+  { pattern: "gpt[-\\s_]?5\\.6[-\\s_]?luna", label: "GPT-5.6 Luna", input: 1.00, cachedInput: 0.10, cacheWriteInput: 1.25, output: 6.00 }
 ];
+const PRICES_PER_MILLION = loadPricing();
 const MIME = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
@@ -52,8 +55,41 @@ function saveCache() {
     fs.writeFileSync(temporary, JSON.stringify(cache), "utf8");
     fs.renameSync(temporary, CACHE_PATH);
   } catch (error) {
-    console.warn(`无法写入增量缓存，将继续运行：${error.message}`);
+    console.warn(`Unable to write incremental cache; continuing without cache: ${error.message}`);
   }
+}
+
+function loadPricing() {
+  const source = PRICING_JSON || (PRICING_FILE ? fs.readFileSync(PRICING_FILE, "utf8") : "");
+  if (!source) return compilePricing(DEFAULT_PRICES_PER_MILLION);
+  try {
+    const parsed = JSON.parse(source);
+    const models = Array.isArray(parsed) ? parsed : parsed.models;
+    if (!Array.isArray(models)) throw new Error("pricing data must be an array or { models: [] }");
+    const compiled = compilePricing(models);
+    if (!compiled.length) throw new Error("pricing data did not contain any valid model rows");
+    return compiled;
+  } catch (error) {
+    console.warn(`Invalid custom pricing configuration; falling back to defaults: ${error.message}`);
+    return compilePricing(DEFAULT_PRICES_PER_MILLION);
+  }
+}
+
+function compilePricing(models) {
+  return models
+    .map((item) => {
+      const pattern = item.pattern || item.match || item.label;
+      return {
+        match: new RegExp(pattern, "i"),
+        pattern,
+        label: item.label,
+        input: Number(item.input),
+        cachedInput: Number(item.cachedInput ?? item.cached_input ?? item.input),
+        cacheWriteInput: Number(item.cacheWriteInput ?? item.cache_write_input ?? item.cachedInput ?? item.cached_input ?? item.input),
+        output: Number(item.output)
+      };
+    })
+    .filter((item) => item.label && Number.isFinite(item.input) && Number.isFinite(item.cachedInput) && Number.isFinite(item.cacheWriteInput) && Number.isFinite(item.output));
 }
 
 function listJsonlFiles(root) {
@@ -78,9 +114,9 @@ function loadTitles() {
     if (!line.trim()) continue;
     try {
       const item = JSON.parse(line);
-      if (item.id) titles.set(item.id, item.thread_name || "未命名会话");
+      if (item.id) titles.set(item.id, item.thread_name || "Untitled session");
     } catch {
-      // Ignore a partially-written index line.
+      // Active index files can briefly end with an incomplete line.
     }
   }
   return titles;
@@ -184,7 +220,7 @@ async function scanUsage() {
       const costBreakdown = estimateCost(model, tokenStats);
       return {
         id: item.id,
-        name: titles.get(item.id) || path.basename(item.cwd || "") || "Codex 会话",
+        name: titles.get(item.id) || path.basename(item.cwd || "") || "Codex session",
         date: String(item.startedAt || item.updatedAt).slice(0, 10),
         startedAt: item.startedAt,
         updatedAt: item.updatedAt,
@@ -211,7 +247,7 @@ async function scanUsage() {
     pricing: {
       unit: "USD per 1M tokens",
       source: PRICING_SOURCE,
-      models: DEFAULT_PRICES_PER_MILLION.map(({ label, input, cachedInput, output }) => ({ label, input, cachedInput, output }))
+      models: PRICES_PER_MILLION.map(({ label, pattern, input, cachedInput, cacheWriteInput, output }) => ({ label, pattern, input, cachedInput, cacheWriteInput, output }))
     },
     costSummary: summarizeCosts(normalized),
     sessions: normalized,
@@ -220,30 +256,34 @@ async function scanUsage() {
 }
 
 function estimateCost(model, usage) {
-  const pricing = DEFAULT_PRICES_PER_MILLION.find((item) => item.match.test(model || ""));
+  const pricing = PRICES_PER_MILLION.find((item) => item.match.test(model || ""));
   if (!pricing) {
     return {
       modelMatched: null,
       estimated: false,
       inputUsd: 0,
       cachedInputUsd: 0,
+      cacheWriteInputUsd: 0,
       outputUsd: 0,
       totalUsd: 0
     };
   }
   const cachedInput = Number(usage.cachedInput) || 0;
-  const billableInput = Math.max(0, (Number(usage.input) || 0) - cachedInput);
+  const cacheWriteInput = Number(usage.cacheWriteInput) || 0;
+  const billableInput = Math.max(0, (Number(usage.input) || 0) - cachedInput - cacheWriteInput);
   const output = Number(usage.output) || 0;
   const inputUsd = (billableInput / 1_000_000) * pricing.input;
   const cachedInputUsd = (cachedInput / 1_000_000) * pricing.cachedInput;
+  const cacheWriteInputUsd = (cacheWriteInput / 1_000_000) * pricing.cacheWriteInput;
   const outputUsd = (output / 1_000_000) * pricing.output;
   return {
     modelMatched: pricing.label,
     estimated: true,
     inputUsd,
     cachedInputUsd,
+    cacheWriteInputUsd,
     outputUsd,
-    totalUsd: inputUsd + cachedInputUsd + outputUsd
+    totalUsd: inputUsd + cachedInputUsd + cacheWriteInputUsd + outputUsd
   };
 }
 
@@ -315,8 +355,8 @@ const server = http.createServer(async (request, response) => {
       return sendJson(response, 200, await getUsage());
     } catch (error) {
       return sendJson(response, 500, {
-        error: "无法读取 Codex 会话统计",
-        detail: error.code === "ENOENT" ? `未找到 ${SESSIONS_DIR}` : error.message
+        error: "Unable to read Codex usage statistics",
+        detail: error.code === "ENOENT" ? `Missing sessions directory: ${SESSIONS_DIR}` : error.message
       });
     }
   }
@@ -325,9 +365,9 @@ const server = http.createServer(async (request, response) => {
 
 server.on("error", (error) => {
   if (error.code === "EADDRINUSE") {
-    console.error(`端口 ${PORT} 已被占用。Token Lens 可能已经运行，或请设置 TOKEN_LENS_PORT 更换端口。`);
+    console.error(`Port ${PORT} is already in use. Token Lens may already be running, or set TOKEN_LENS_PORT to another port.`);
   } else {
-    console.error(`Token Lens 启动失败：${error.message}`);
+    console.error(`Token Lens failed to start: ${error.message}`);
   }
   process.exitCode = 1;
 });
@@ -335,7 +375,7 @@ server.on("error", (error) => {
 server.listen(PORT, HOST, () => {
   const address = server.address();
   const activePort = typeof address === "object" ? address.port : PORT;
-  console.log(`\nCodex Token Lens 已启动：http://${HOST}:${activePort}`);
-  console.log(`数据来源：${SESSIONS_DIR}`);
-  console.log("只读取 Token 汇总、模型和会话标题；按 Ctrl+C 停止。\n");
+  console.log(`\nCodex Token Lens started: http://${HOST}:${activePort}`);
+  console.log(`Data source: ${SESSIONS_DIR}`);
+  console.log("Read-only token totals, models, limits, and session titles. Press Ctrl+C to stop.\n");
 });

@@ -55,11 +55,11 @@ function render() {
   $("#outputBar").style.width = `${100 - inputPercent}%`;
   $("#changeBadge").textContent = filterLabel();
   $("#costUsd").textContent = money.format(cost);
-  $("#costSummary").textContent = priced ? `${priced}/${sessions.length} 个会话可估算` : "当前筛选无可估算模型";
+  $("#costSummary").textContent = priced ? `${priced}/${sessions.length} sessions priced` : "No priced model in current filter";
 
   renderRateLimits();
   $("#averageTokens").textContent = compact.format(average);
-  $("#sessionSummary").textContent = `共读取 ${sessions.length} 次真实会话`;
+  $("#sessionSummary").textContent = `${sessions.length} real sessions loaded`;
   renderMiniBars(sessions);
   renderChart(sessions);
   renderTable(sessions);
@@ -68,17 +68,17 @@ function render() {
 
 function filterLabel() {
   const parts = [];
-  parts.push(state.period === "all" ? "全部记录" : `近 ${state.period} 天`);
+  parts.push(state.period === "all" ? "All records" : `Last ${state.period}d`);
   if (state.modelFilter !== "all") parts.push(state.modelFilter);
-  if (state.dateFrom || state.dateTo) parts.push(`${state.dateFrom || "起始"} → ${state.dateTo || "现在"}`);
-  return parts.join(" · ");
+  if (state.dateFrom || state.dateTo) parts.push(`${state.dateFrom || "start"} to ${state.dateTo || "now"}`);
+  return parts.join(" / ");
 }
 
 function populateModelFilter() {
   const select = $("#modelFilter");
   const models = [...new Set(state.sessions.map((item) => item.model).filter(Boolean))].sort();
   const previous = state.modelFilter;
-  select.innerHTML = `<option value="all">全部模型</option>${models.map((model) => `<option value="${escapeHtml(model)}">${escapeHtml(model)}</option>`).join("")}`;
+  select.innerHTML = `<option value="all">All models</option>${models.map((model) => `<option value="${escapeHtml(model)}">${escapeHtml(model)}</option>`).join("")}`;
   select.value = models.includes(previous) ? previous : "all";
   state.modelFilter = select.value;
 }
@@ -86,17 +86,17 @@ function populateModelFilter() {
 function renderRateLimits() {
   renderLimit("primary", state.rateLimits?.primary);
   renderLimit("secondary", state.rateLimits?.secondary);
-  const windowText = state.rateLimits?.primary?.window_minutes ? formatWindow(Number(state.rateLimits.primary.window_minutes)) : "当前窗口";
+  const windowText = state.rateLimits?.primary?.window_minutes ? formatWindow(Number(state.rateLimits.primary.window_minutes)) : "Current window";
   $("#limitWindow").textContent = windowText;
 }
 
 function renderLimit(kind, limit) {
   const prefix = kind === "primary" ? "primary" : "secondary";
   if (!limit) {
-    $(`#${prefix}Percent`).textContent = "—";
+    $(`#${prefix}Percent`).textContent = "--";
     $(`#${prefix}Ring`).style.setProperty("--progress", "0deg");
-    $(`#${prefix}Detail`).textContent = "当前事件未提供限额信息";
-    $(`#${prefix}Reset`).textContent = "未提供";
+    $(`#${prefix}Detail`).textContent = "No limit snapshot in latest event";
+    $(`#${prefix}Reset`).textContent = "Not provided";
     return;
   }
   const percent = Math.min(Number(limit.used_percent) || 0, 100);
@@ -104,18 +104,18 @@ function renderLimit(kind, limit) {
   const reset = limit.resets_at ? new Date(limit.resets_at * 1000) : null;
   $(`#${prefix}Percent`).textContent = `${Math.round(percent)}%`;
   $(`#${prefix}Ring`).style.setProperty("--progress", `${percent * 3.6}deg`);
-  $(`#${prefix}Detail`).textContent = `${formatWindow(minutes)} 使用窗口`;
+  $(`#${prefix}Detail`).textContent = `${formatWindow(minutes)} window`;
   $(`#${prefix}Reset`).textContent = reset
-    ? `${reset.toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })} 重置`
-    : "重置时间未知";
+    ? `${reset.toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })} reset`
+    : "Reset unknown";
 }
 
 function formatWindow(minutes) {
-  if (!minutes) return "当前";
-  if (minutes >= 10080 && minutes % 10080 === 0) return `${minutes / 10080} 周`;
-  if (minutes >= 1440 && minutes % 1440 === 0) return `${minutes / 1440} 天`;
-  if (minutes >= 60 && minutes % 60 === 0) return `${minutes / 60} 小时`;
-  return `${minutes} 分钟`;
+  if (!minutes) return "Current";
+  if (minutes >= 10080 && minutes % 10080 === 0) return `${minutes / 10080}w`;
+  if (minutes >= 1440 && minutes % 1440 === 0) return `${minutes / 1440}d`;
+  if (minutes >= 60 && minutes % 60 === 0) return `${minutes / 60}h`;
+  return `${minutes}m`;
 }
 
 function renderMiniBars(sessions) {
@@ -123,7 +123,7 @@ function renderMiniBars(sessions) {
   const max = Math.max(...values, 1);
   $("#miniBars").innerHTML = values.length
     ? values.map((value) => `<i style="height:${Math.max(10, (value / max) * 100)}%"></i>`).join("")
-    : "<span class='muted'>暂无数据</span>";
+    : "<span class='muted'>No data</span>";
 }
 
 function renderChart(sessions) {
@@ -153,7 +153,7 @@ function renderChart(sessions) {
             <label>${item.date.slice(5).replace("-", "/")}</label>
           </div>`;
       }).join("")
-    : "<p class='muted'>当前筛选暂无记录</p>";
+    : "<p class='muted'>No records in current filter</p>";
 }
 
 function renderTable(sessions) {
@@ -163,17 +163,17 @@ function renderTable(sessions) {
         <td class="session-name" title="${escapeHtml(item.name)}">${escapeHtml(shorten(item.name, 32))}</td>
         <td>${item.date}</td>
         <td><span class="model-pill">${escapeHtml(item.model)}</span></td>
-        <td title="其中缓存输入 ${integer.format(item.cachedInput || 0)}">${integer.format(item.input)}</td>
-        <td title="其中推理输出 ${integer.format(item.reasoningOutput || 0)}">${integer.format(item.output)}</td>
+        <td title="Cached input ${integer.format(item.cachedInput || 0)}">${integer.format(item.input)}</td>
+        <td title="Reasoning output ${integer.format(item.reasoningOutput || 0)}">${integer.format(item.output)}</td>
         <td><strong>${integer.format(item.total || item.input + item.output)}</strong></td>
-        <td title="${costTitle(item)}">${item.costBreakdown?.estimated ? money.format(item.costUsd) : "未匹配"}</td>
+        <td title="${costTitle(item)}">${item.costBreakdown?.estimated ? money.format(item.costUsd) : "Unpriced"}</td>
       </tr>`).join("")
-    : `<tr><td colspan="7" class="muted">当前筛选暂无 Codex 会话记录。</td></tr>`;
+    : `<tr><td colspan="7" class="muted">No Codex sessions in current filter.</td></tr>`;
 }
 
 function costTitle(item) {
-  if (!item.costBreakdown?.estimated) return "模型未匹配内置 API 定价表";
-  return `匹配 ${item.costBreakdown.modelMatched}；input ${money.format(item.costBreakdown.inputUsd)}，cached ${money.format(item.costBreakdown.cachedInputUsd)}，output ${money.format(item.costBreakdown.outputUsd)}`;
+  if (!item.costBreakdown?.estimated) return "Model did not match the built-in or custom API pricing table.";
+  return `Matched ${item.costBreakdown.modelMatched}; input ${money.format(item.costBreakdown.inputUsd)}, cached ${money.format(item.costBreakdown.cachedInputUsd)}, cache write ${money.format(item.costBreakdown.cacheWriteInputUsd || 0)}, output ${money.format(item.costBreakdown.outputUsd)}`;
 }
 
 function renderInsights(sessions, input, cachedInput, output, cost) {
@@ -181,22 +181,62 @@ function renderInsights(sessions, input, cachedInput, output, cost) {
   const ratio = output ? input / output : 0;
   const cacheRate = input ? (cachedInput / input) * 100 : 0;
 
-  $("#peakSession").textContent = peak ? compact.format(peak.total) : "—";
-  $("#tokenRatio").textContent = output ? `${ratio.toFixed(1)} : 1` : "—";
+  $("#peakSession").textContent = peak ? compact.format(peak.total) : "--";
+  $("#tokenRatio").textContent = output ? `${ratio.toFixed(1)} : 1` : "--";
 
-  let insight = "读取到真实 Codex 会话后，这里会生成简单的使用建议。";
+  let insight = "Load real Codex sessions to get a quick usage note.";
   if (sessions.length) {
-    if (cost > 0) insight = `当前筛选 API 等价估算约 ${money.format(cost)}。这是按内置官方公开价换算，不等于你的订阅额度。`;
-    if (cacheRate >= 60) insight += ` 缓存输入占 ${Math.round(cacheRate)}%，上下文复用效果不错。`;
-    else if (ratio > 4) insight += " 输入占比偏高，缩小工作区上下文能降消耗。";
-    else if (ratio < 1.8) insight += " 输出占比偏高，可在提示里限制答案长度。";
+    insight = cost > 0
+      ? `Current filter is roughly ${money.format(cost)} in API-equivalent cost. This is an estimate, not your subscription quota or bill.`
+      : "The current filter has usage, but none of its models matched the pricing table.";
+    if (cacheRate >= 60) insight += ` Cached input is ${Math.round(cacheRate)}%, so context reuse is doing useful work.`;
+    else if (ratio > 4) insight += " Input dominates output; trimming workspace context can reduce usage.";
+    else if (ratio < 1.8) insight += " Output is a large share; shorter requested answers can reduce usage.";
   }
   $("#insightText").textContent = insight;
 }
 
+function exportSessions(format) {
+  const sessions = filteredSessions();
+  const filename = `codex-token-lens-${new Date().toISOString().slice(0, 10)}.${format}`;
+  if (format === "json") {
+    download(filename, "application/json", JSON.stringify({ exportedAt: new Date().toISOString(), filters: currentFilters(), sessions }, null, 2));
+    return;
+  }
+  const columns = ["date", "name", "model", "input", "cachedInput", "output", "reasoningOutput", "total", "costUsd", "priced"];
+  const rows = [columns.join(","), ...sessions.map((item) => columns.map((column) => csvCell(column === "priced" ? Boolean(item.costBreakdown?.estimated) : item[column])).join(","))];
+  download(filename, "text/csv", rows.join("\n"));
+}
+
+function currentFilters() {
+  return {
+    period: state.period,
+    model: state.modelFilter,
+    dateFrom: state.dateFrom,
+    dateTo: state.dateTo
+  };
+}
+
+function csvCell(value) {
+  const text = String(value ?? "");
+  return /[",\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+}
+
+function download(filename, type, body) {
+  const blob = new Blob([body], { type: `${type};charset=utf-8` });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
 function shorten(value, limit) {
-  const text = String(value || "Codex 会话");
-  return text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
+  const text = String(value || "Codex session");
+  return text.length > limit ? `${text.slice(0, limit - 1)}...` : text;
 }
 
 function escapeHtml(value) {
@@ -216,7 +256,7 @@ async function loadRealUsage() {
   if (state.loading) return;
   state.loading = true;
   $("#refreshButton").classList.add("loading");
-  setConnectionStatus("loading", "正在读取 Codex");
+  setConnectionStatus("loading", "Reading Codex");
   try {
     const response = await fetch("/api/usage", { cache: "no-store" });
     const data = await response.json();
@@ -226,18 +266,18 @@ async function loadRealUsage() {
     state.costSummary = data.costSummary;
     state.pricing = data.pricing;
     state.source = data.source;
-    $("#lastUpdated").textContent = `${new Date(data.scannedAt).toLocaleTimeString("zh-CN")} 同步 · ${data.scanDurationMs}ms`;
+    $("#lastUpdated").textContent = `${new Date(data.scannedAt).toLocaleTimeString("zh-CN")} synced / ${data.scanDurationMs}ms`;
     $("#sourcePath").textContent = data.source;
-    if (data.available) setConnectionStatus("ready", `已连接 · ${data.sessionCount} 个会话`);
+    if (data.available) setConnectionStatus("ready", `Connected / ${data.sessionCount} sessions`);
     else {
-      setConnectionStatus("error", "未找到 Codex 数据");
-      $("#lastUpdated").textContent = `数据目录不存在：${data.source}`;
+      setConnectionStatus("error", "Codex data not found");
+      $("#lastUpdated").textContent = `Missing data directory: ${data.source}`;
     }
     render();
   } catch (error) {
-    setConnectionStatus("error", "连接失败");
+    setConnectionStatus("error", "Connection failed");
     $("#lastUpdated").textContent = error.message;
-    $("#sessionTable").innerHTML = `<tr><td colspan="7" class="muted">请通过 start.cmd 启动本地数据服务，不能直接双击 index.html。</td></tr>`;
+    $("#sessionTable").innerHTML = `<tr><td colspan="7" class="muted">Start the local server with start.cmd or npm start. Opening index.html directly cannot read local Codex data.</td></tr>`;
   } finally {
     state.loading = false;
     $("#refreshButton").classList.remove("loading");
@@ -274,6 +314,8 @@ $("#clearFilters").addEventListener("click", () => {
   render();
 });
 
+$("#exportJson").addEventListener("click", () => exportSessions("json"));
+$("#exportCsv").addEventListener("click", () => exportSessions("csv"));
 $("#refreshButton").addEventListener("click", loadRealUsage);
 $("#themeToggle").addEventListener("click", () => {
   document.body.classList.toggle("dark");

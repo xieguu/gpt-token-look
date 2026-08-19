@@ -538,6 +538,18 @@ h2 { margin: 0; font-size: 18px; letter-spacing: -.03em; }
 
 .table-panel { margin-top: 15px; padding-bottom: 12px; }
 .table-heading { align-items: center; margin-bottom: 20px; }
+.table-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.table-actions .secondary-button {
+  min-height: 34px;
+  padding-inline: 12px;
+  font-size: 11px;
+}
 .table-scroll { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; min-width: 760px; }
 
@@ -665,6 +677,7 @@ body.dark .split-bar span:first-child, body.dark .input-dot, body.dark .bar-inpu
   .stat-card-main { grid-column: auto; }
   .form-row { grid-template-columns: 1fr; gap: 0; }
   .chart-panel { padding-inline: 14px; }
+  .table-actions { justify-content: flex-start; }
   .chart { gap: 2px; }
   .chart-column label { font-size: 8px; }
   footer { display: block; line-height: 2; }

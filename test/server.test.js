@@ -18,7 +18,7 @@ test("serves aggregated usage, pricing estimate, and primary/secondary limits", 
       info: { total_token_usage: {
         input_tokens: 1200,
         cached_input_tokens: 800,
-        cache_write_input_tokens: 0,
+        cache_write_input_tokens: 100,
         output_tokens: 300,
         reasoning_output_tokens: 50,
         total_tokens: 1500
@@ -39,6 +39,7 @@ test("serves aggregated usage, pricing estimate, and primary/secondary limits", 
   assert.equal(data.sessions[0].model, "gpt-5.6-luna");
   assert.equal(data.sessions[0].input, 1200);
   assert.equal(data.sessions[0].cachedInput, 800);
+  assert.equal(data.sessions[0].cacheWriteInput, 100);
   assert.equal(data.sessions[0].output, 300);
   assert.equal(data.sessions[0].reasoningOutput, 50);
   assert.equal(data.sessions[0].total, 1500);
@@ -46,10 +47,12 @@ test("serves aggregated usage, pricing estimate, and primary/secondary limits", 
   assert.equal(data.rateLimits.secondary.used_percent, 34);
   assert.equal(data.sessions[0].costBreakdown.estimated, true);
   assert.equal(data.sessions[0].costBreakdown.modelMatched, "GPT-5.6 Luna");
-  assert.equal(Number(data.sessions[0].costUsd.toFixed(6)), 0.000456);
-  assert.equal(Number(data.costSummary.totalUsd.toFixed(6)), 0.000456);
+  assert.equal(Number(data.sessions[0].costUsd.toFixed(6)), 0.002305);
+  assert.equal(Number(data.sessions[0].costBreakdown.cacheWriteInputUsd.toFixed(6)), 0.000125);
+  assert.equal(Number(data.costSummary.totalUsd.toFixed(6)), 0.002305);
   assert.equal(data.costSummary.unpricedSessionCount, 0);
-  assert.ok(data.pricing.models.some((item) => item.label === "GPT-5.6 Luna"));
+  assert.equal(data.pricing.source, "https://platform.openai.com/pricing");
+  assert.ok(data.pricing.models.some((item) => item.label === "GPT-5.6 Luna" && item.cacheWriteInput === 1.25));
   assert.ok(fs.readdirSync(fixture.cacheDir).some((name) => name.startsWith("usage-")));
 });
 
@@ -81,12 +84,51 @@ test("returns available=false when Codex sessions directory is missing", { timeo
   assert.deepEqual(data.sessions, []);
 });
 
-async function fetchUsage(fixture) {
+test("marks unknown models as unpriced", { timeout: 15000 }, async (context) => {
+  const fixture = createFixture(context);
+  writeUsageSession(fixture, "anonymous-session-unknown", "custom-local-model", {
+    input_tokens: 1000,
+    output_tokens: 1000,
+    total_tokens: 2000
+  });
+
+  const data = await fetchUsage(fixture);
+  assert.equal(data.sessionCount, 1);
+  assert.equal(data.sessions[0].costBreakdown.estimated, false);
+  assert.equal(data.sessions[0].costUsd, 0);
+  assert.equal(data.costSummary.estimatedSessionCount, 0);
+  assert.equal(data.costSummary.unpricedSessionCount, 1);
+});
+
+test("honors custom pricing JSON", { timeout: 15000 }, async (context) => {
+  const fixture = createFixture(context);
+  writeUsageSession(fixture, "anonymous-session-custom", "custom-model", {
+    input_tokens: 1000,
+    cached_input_tokens: 200,
+    cache_write_input_tokens: 100,
+    output_tokens: 50,
+    total_tokens: 1050
+  });
+
+  const data = await fetchUsage(fixture, {
+    TOKEN_LENS_PRICES_JSON: JSON.stringify({
+      models: [{ pattern: "custom-model", label: "Custom Model", input: 10, cachedInput: 1, cacheWriteInput: 20, output: 30 }]
+    })
+  });
+
+  assert.equal(data.sessions[0].costBreakdown.estimated, true);
+  assert.equal(data.sessions[0].costBreakdown.modelMatched, "Custom Model");
+  assert.equal(Number(data.sessions[0].costUsd.toFixed(6)), 0.0107);
+  assert.equal(data.pricing.models[0].label, "Custom Model");
+});
+
+async function fetchUsage(fixture, extraEnv = {}) {
   const child = spawn(process.execPath, ["server.js"], {
     cwd: projectRoot,
     windowsHide: true,
     env: {
       ...process.env,
+      ...extraEnv,
       CODEX_HOME: fixture.codexHome,
       TOKEN_LENS_CACHE_DIR: fixture.cacheDir,
       TOKEN_LENS_PORT: "0"
@@ -101,7 +143,9 @@ async function fetchUsage(fixture) {
     assert.match(response.headers.get("content-security-policy"), /default-src 'self'/);
     const page = await fetch(url);
     assert.equal(page.status, 200);
-    assert.match(await page.text(), /Codex Token Lens/);
+    const html = await page.text();
+    assert.match(html, /Codex Token Lens/);
+    assert.match(html, /Export CSV/);
     return await response.json();
   } finally {
     if (!child.killed) child.kill();
@@ -116,6 +160,14 @@ function createFixture(context) {
   fs.mkdirSync(sessionDir, { recursive: true });
   context.after(() => fs.rmSync(root, { recursive: true, force: true }));
   return { root, codexHome, sessionDir, cacheDir };
+}
+
+function writeUsageSession(fixture, sessionId, model, usage) {
+  writeSession(fixture, sessionId, [
+    event("2026-07-28T01:00:00.000Z", "session_meta", { id: sessionId, timestamp: "2026-07-28T01:00:00.000Z", cwd: path.join(fixture.root, "example-project") }),
+    event("2026-07-28T01:00:01.000Z", "turn_context", { model, cwd: path.join(fixture.root, "example-project") }),
+    event("2026-07-28T01:00:02.000Z", "event_msg", { type: "token_count", info: { total_token_usage: usage } })
+  ]);
 }
 
 function writeSession(fixture, sessionId, events) {
