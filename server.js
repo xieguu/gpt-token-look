@@ -11,6 +11,7 @@ if (!Number.isInteger(PORT) || PORT < 0 || PORT > 65535) {
   console.error("TOKEN_LENS_PORT 必须是 0 到 65535 之间的整数。");
   process.exit(1);
 }
+
 const APP_DIR = __dirname;
 const CODEX_DIR = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
 const SESSIONS_DIR = path.join(CODEX_DIR, "sessions");
@@ -18,6 +19,12 @@ const INDEX_PATH = path.join(CODEX_DIR, "session_index.jsonl");
 const CACHE_DIR = process.env.TOKEN_LENS_CACHE_DIR || path.join(os.tmpdir(), "codex-token-lens");
 const CACHE_ID = crypto.createHash("sha256").update(CODEX_DIR).digest("hex").slice(0, 12);
 const CACHE_PATH = path.join(CACHE_DIR, `usage-${CACHE_ID}.json`);
+const PRICING_SOURCE = "https://developers.openai.com/api/docs/models/compare";
+const DEFAULT_PRICES_PER_MILLION = [
+  { match: /gpt[-\s_]?5\.6[-\s_]?sol/i, label: "GPT-5.6 Sol", input: 5.00, cachedInput: 0.50, output: 30.00 },
+  { match: /gpt[-\s_]?5\.6[-\s_]?terra/i, label: "GPT-5.6 Terra", input: 2.00, cachedInput: 0.20, output: 12.00 },
+  { match: /gpt[-\s_]?5\.6[-\s_]?luna/i, label: "GPT-5.6 Luna", input: 0.20, cachedInput: 0.02, output: 1.20 }
+];
 const MIME = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
@@ -165,19 +172,26 @@ async function scanUsage() {
     .filter((item) => item?.usage)
     .map((item) => {
       const usage = item.usage;
+      const model = item.model || "Codex";
+      const tokenStats = {
+        input: Number(usage.input_tokens) || 0,
+        cachedInput: Number(usage.cached_input_tokens) || 0,
+        cacheWriteInput: Number(usage.cache_write_input_tokens) || 0,
+        output: Number(usage.output_tokens) || 0,
+        reasoningOutput: Number(usage.reasoning_output_tokens) || 0,
+        total: Number(usage.total_tokens) || 0
+      };
+      const costBreakdown = estimateCost(model, tokenStats);
       return {
         id: item.id,
         name: titles.get(item.id) || path.basename(item.cwd || "") || "Codex 会话",
         date: String(item.startedAt || item.updatedAt).slice(0, 10),
         startedAt: item.startedAt,
         updatedAt: item.updatedAt,
-        model: item.model || "Codex",
-        input: Number(usage.input_tokens) || 0,
-        cachedInput: Number(usage.cached_input_tokens) || 0,
-        cacheWriteInput: Number(usage.cache_write_input_tokens) || 0,
-        output: Number(usage.output_tokens) || 0,
-        reasoningOutput: Number(usage.reasoning_output_tokens) || 0,
-        total: Number(usage.total_tokens) || 0,
+        model,
+        ...tokenStats,
+        costUsd: costBreakdown.totalUsd,
+        costBreakdown,
         rateLimits: item.rateLimits,
         usageTimestamp: item.usageTimestamp
       };
@@ -185,7 +199,7 @@ async function scanUsage() {
     .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
 
   const latestLimit = normalized
-    .filter((item) => item.rateLimits?.primary)
+    .filter((item) => item.rateLimits?.primary || item.rateLimits?.secondary)
     .sort((a, b) => String(b.usageTimestamp).localeCompare(String(a.usageTimestamp)))[0]?.rateLimits || null;
 
   return {
@@ -194,8 +208,51 @@ async function scanUsage() {
     scannedAt: new Date().toISOString(),
     scanDurationMs: Date.now() - started,
     sessionCount: normalized.length,
+    pricing: {
+      unit: "USD per 1M tokens",
+      source: PRICING_SOURCE,
+      models: DEFAULT_PRICES_PER_MILLION.map(({ label, input, cachedInput, output }) => ({ label, input, cachedInput, output }))
+    },
+    costSummary: summarizeCosts(normalized),
     sessions: normalized,
     rateLimits: latestLimit
+  };
+}
+
+function estimateCost(model, usage) {
+  const pricing = DEFAULT_PRICES_PER_MILLION.find((item) => item.match.test(model || ""));
+  if (!pricing) {
+    return {
+      modelMatched: null,
+      estimated: false,
+      inputUsd: 0,
+      cachedInputUsd: 0,
+      outputUsd: 0,
+      totalUsd: 0
+    };
+  }
+  const cachedInput = Number(usage.cachedInput) || 0;
+  const billableInput = Math.max(0, (Number(usage.input) || 0) - cachedInput);
+  const output = Number(usage.output) || 0;
+  const inputUsd = (billableInput / 1_000_000) * pricing.input;
+  const cachedInputUsd = (cachedInput / 1_000_000) * pricing.cachedInput;
+  const outputUsd = (output / 1_000_000) * pricing.output;
+  return {
+    modelMatched: pricing.label,
+    estimated: true,
+    inputUsd,
+    cachedInputUsd,
+    outputUsd,
+    totalUsd: inputUsd + cachedInputUsd + outputUsd
+  };
+}
+
+function summarizeCosts(sessions) {
+  const estimated = sessions.filter((item) => item.costBreakdown?.estimated);
+  return {
+    estimatedSessionCount: estimated.length,
+    unpricedSessionCount: sessions.length - estimated.length,
+    totalUsd: estimated.reduce((total, item) => total + Number(item.costUsd || 0), 0)
   };
 }
 
