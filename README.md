@@ -1,122 +1,100 @@
 # Codex Token Lens
 
-一个本地优先的 Codex Token 用量可视化面板。它读取当前电脑上的 Codex 会话归档，展示输入、缓存输入、输出、推理输出、会话趋势和最近一次限额窗口。
+本地优先的 Codex Token 用量仪表盘。它读取本机 `~/.codex/sessions` 中的 JSONL 会话统计，展示 Token、模型、会话、限额和美元估算。
 
-![Codex Token Lens 预览](./token-lens-preview.png)
+![Codex Token Lens preview](./token-lens-preview.png)
 
-> 这是社区项目，并非 OpenAI 官方产品。本项目读取的是 Codex 客户端本地状态格式；该格式不是公开承诺的稳定 API，Codex 更新后解析器可能需要同步调整。
+## 功能
 
-## 特性
+- 按日期范围和模型筛选会话
+- 汇总 input、cached input、output、reasoning 和 total tokens
+- 显示最新 `primary` / `secondary` 使用限额与重置时间
+- 按内置模型价格表估算 API 美元成本
+- 自动刷新，默认每 30 秒同步一次
+- 只读取本地统计字段，不读取会话正文、工具输出、`auth.json` 或 API key
 
-- 真实读取本机 Codex Token 汇总，不使用示例数据
-- 展示 7 天、30 天和全部历史趋势
-- 展示输入、缓存输入、输出和推理输出
-- 读取最近一次 Codex 限额窗口、使用比例和重置时间
-- 每 30 秒自动刷新，并使用增量缓存加速后续扫描
-- 服务仅监听 `127.0.0.1`
-- 不向浏览器返回提示词正文、工具输出或认证文件
-- 无第三方运行时依赖，无外部字体或分析脚本
-- 支持 Windows、macOS 和 Linux
+## 快速开始
 
-## 环境要求
-
-- Node.js 18 或更高版本
-- 已在当前系统用户下使用过 Codex，并存在本地会话归档
-
-默认数据目录：
-
-- Windows：`%USERPROFILE%\.codex\sessions`
-- macOS/Linux：`~/.codex/sessions`
-
-## 启动
-
-克隆或下载项目后：
+要求：Node.js 18+
 
 ```bash
+npm install
 npm start
 ```
 
-然后访问：
+打开：<http://127.0.0.1:4173>
+
+Windows 也可以运行：
 
 ```text
-http://127.0.0.1:4173
+start.cmd
 ```
 
-Windows 用户也可以双击 `start.cmd`，它会启动服务并打开默认浏览器。
+## 配置
 
-macOS/Linux 用户可以运行：
-
-```bash
-./start.sh
-```
-
-如果脚本尚无执行权限：
-
-```bash
-chmod +x start.sh
-```
-
-## 自定义配置
-
-可通过环境变量指定其他数据目录或端口：
-
-```bash
-CODEX_HOME=/path/to/.codex TOKEN_LENS_PORT=8080 npm start
-```
+| 环境变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `CODEX_HOME` | `~/.codex` | Codex 数据目录 |
+| `TOKEN_LENS_PORT` | `4173` | 本地 HTTP 端口，设为 `0` 可随机分配 |
+| `TOKEN_LENS_CACHE_DIR` | 系统临时目录 | 增量扫描缓存目录 |
 
 PowerShell 示例：
 
 ```powershell
-$env:CODEX_HOME = "D:\codex-profile"
-$env:TOKEN_LENS_PORT = "8080"
-npm start
+$env:CODEX_HOME = "$HOME\.codex"
+$env:TOKEN_LENS_PORT = "4173"
+npm.cmd start
 ```
 
-当不同账号需要严格隔离时，建议为每个账号使用独立的 `CODEX_HOME`。本项目不会读取 `auth.json`，因此无法可靠判断同一数据目录中的会话分别属于哪个账号。
+## API
 
-## 数据与隐私
+```http
+GET http://127.0.0.1:4173/api/usage
+```
 
-服务端只解析以下汇总信息：
+返回字段包括：
 
-- 会话 ID、标题、日期和模型名称
-- 输入与缓存输入 Token
-- 输出与推理输出 Token
-- Token 总量
-- 最近一次限额窗口
+- `sessions[]`：会话、模型、Token 和单会话美元估算
+- `costSummary`：已估算会话数、未匹配价格会话数和总美元估算
+- `rateLimits.primary` / `rateLimits.secondary`：最新限额窗口
+- `pricing`：当前内置价格表及官方来源链接
 
-不会解析或返回：
+PowerShell 调用：
 
-- 用户提示词正文
-- 助手回复正文
-- 工具调用参数与输出
-- API Key、访问令牌或 `auth.json`
+```powershell
+$data = Invoke-RestMethod http://127.0.0.1:4173/api/usage
+$data.costSummary
+$data.sessions
+```
 
-增量缓存保存在系统临时目录的 `codex-token-lens` 子目录中，不会写入项目仓库。API 只绑定本机回环地址，并设置了同源内容安全策略。
+## 美元估算
 
-## 账号与跨设备
+价格单位为 USD / 1M tokens。估算公式：
 
-这个面板按“本机 Codex 数据目录”统计，而不是通过 ChatGPT 账号联网查询：
+```text
+billable_input = input_tokens - cached_input_tokens
+cost = billable_input / 1_000_000 * input_price
+     + cached_input_tokens / 1_000_000 * cached_input_price
+     + output_tokens / 1_000_000 * output_price
+```
 
-- 换电脑后只会显示新电脑本地已有的会话
-- 仅复制本项目不会同步旧电脑的历史数据
-- 同一 `CODEX_HOME` 曾使用多个账号时，统计可能合并
-- 它不统计 ChatGPT 网页、桌面聊天或手机 App 的 Token
+未匹配到价格的模型不会被虚构计费，会标记为未估算。价格来源：<https://developers.openai.com/api/docs/models/compare>
 
 ## 开发与测试
 
 ```bash
-npm run check
-npm test
+npm.cmd run check
+npm.cmd test
 ```
 
-测试使用临时的匿名 Codex 会话夹具，不读取真实用户会话。
+## 隐私边界
 
-## 已知限制
+服务只监听 `127.0.0.1`，只读取本地 Codex 会话统计字段，不上传第三方服务，不读取：
 
-- 本地会话格式可能随 Codex 版本变化
-- 会话归属无法在不读取账号认证信息的前提下可靠区分
-- 首次扫描耗时取决于本地会话归档大小；后续扫描会使用增量缓存
-- 当前只提供本机使用，不应把服务绑定到公网地址
+- 会话正文
+- 工具输出
+- `auth.json`
+- API key
 
 ## License
 
