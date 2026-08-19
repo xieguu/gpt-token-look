@@ -7,7 +7,7 @@
 ## 功能
 
 - 按最近 7 天、30 天、全部记录查看用量
-- 按日期范围和模型筛选会话
+- 默认只显示当天会话；可切换 Today / 7d / 30d / All，或使用自定义日期范围和模型筛选
 - 汇总 input、cached input、cache write input、output、reasoning output 和 total tokens
 - 显示最新 `primary` / `secondary` 使用限额与重置时间
 - 按内置或自定义价格表估算 API 等价美元成本

@@ -146,6 +146,7 @@ async function fetchUsage(fixture, extraEnv = {}) {
     const html = await page.text();
     assert.match(html, /Codex Token Lens/);
     assert.match(html, /Export CSV/);
+    assert.match(html, /data-period="today"/);
     return await response.json();
   } finally {
     if (!child.killed) child.kill();

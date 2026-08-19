@@ -1,7 +1,14 @@
 const THEME_KEY = "codex-token-lens-theme";
 
+function localDateIso(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 const state = {
-  period: "30",
+  period: "today",
   sessions: [],
   rateLimits: null,
   costSummary: null,
@@ -19,9 +26,18 @@ const compact = new Intl.NumberFormat("en", { notation: "compact", maximumFracti
 const integer = new Intl.NumberFormat("en");
 const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 4, maximumFractionDigits: 4 });
 
+function sessionDate(item) {
+  if (item.date) return String(item.date).slice(0, 10);
+  const updatedAt = new Date(item.updatedAt);
+  return Number.isNaN(updatedAt.getTime()) ? "" : localDateIso(updatedAt);
+}
+
 function filteredSessions() {
   let result = [...state.sessions];
-  if (state.period !== "all") {
+  if (state.period === "today") {
+    const today = localDateIso();
+    result = result.filter((item) => sessionDate(item) === today);
+  } else if (state.period !== "all") {
     const days = Number(state.period);
     const threshold = Date.now() - days * 86400000;
     result = result.filter((item) => new Date(item.updatedAt || `${item.date}T12:00:00`).getTime() >= threshold);
@@ -68,12 +84,11 @@ function render() {
 
 function filterLabel() {
   const parts = [];
-  parts.push(state.period === "all" ? "All records" : `Last ${state.period}d`);
-  if (state.modelFilter !== "all") parts.push(state.modelFilter);
   if (state.dateFrom || state.dateTo) parts.push(`${state.dateFrom || "start"} to ${state.dateTo || "now"}`);
+  else parts.push(state.period === "all" ? "All records" : state.period === "today" ? "Today" : `Last ${state.period}d`);
+  if (state.modelFilter !== "all") parts.push(state.modelFilter);
   return parts.join(" / ");
 }
-
 function populateModelFilter() {
   const select = $("#modelFilter");
   const models = [...new Set(state.sessions.map((item) => item.model).filter(Boolean))].sort();
@@ -284,36 +299,48 @@ async function loadRealUsage() {
   }
 }
 
-$$(".period-switch button").forEach((button) => {
+$$('.period-switch button').forEach((button) => {
   button.addEventListener("click", () => {
     $$(".period-switch button").forEach((item) => item.classList.remove("active"));
     button.classList.add("active");
     state.period = button.dataset.period;
+    state.dateFrom = "";
+    state.dateTo = "";
+    $("#dateFrom").value = "";
+    $("#dateTo").value = "";
     render();
   });
 });
-
 $("#modelFilter").addEventListener("change", (event) => {
   state.modelFilter = event.target.value;
   render();
 });
+function activateCustomDateRange() {
+  state.period = "all";
+  $$(".period-switch button").forEach((item) => item.classList.remove("active"));
+}
+
 $("#dateFrom").addEventListener("change", (event) => {
   state.dateFrom = event.target.value;
+  activateCustomDateRange();
   render();
 });
 $("#dateTo").addEventListener("change", (event) => {
   state.dateTo = event.target.value;
+  activateCustomDateRange();
   render();
 });
 $("#clearFilters").addEventListener("click", () => {
+  state.period = "today";
   state.modelFilter = "all";
   state.dateFrom = "";
   state.dateTo = "";
+  $("#modelFilter").value = "all";
   $("#dateFrom").value = "";
   $("#dateTo").value = "";
+  $$(".period-switch button").forEach((item) => item.classList.toggle("active", item.dataset.period === "today"));
   render();
 });
-
 $("#exportJson").addEventListener("click", () => exportSessions("json"));
 $("#exportCsv").addEventListener("click", () => exportSessions("csv"));
 $("#refreshButton").addEventListener("click", loadRealUsage);
