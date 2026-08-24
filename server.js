@@ -4,6 +4,7 @@ const path = require("node:path");
 const os = require("node:os");
 const readline = require("node:readline");
 const crypto = require("node:crypto");
+const { spawn } = require("node:child_process");
 
 const HOST = "127.0.0.1";
 const PORT = process.env.TOKEN_LENS_PORT === undefined ? 4173 : Number(process.env.TOKEN_LENS_PORT);
@@ -22,6 +23,8 @@ const CACHE_PATH = path.join(CACHE_DIR, `usage-${CACHE_ID}.json`);
 const PRICING_SOURCE = "https://platform.openai.com/pricing";
 const PRICING_FILE = process.env.TOKEN_LENS_PRICING_FILE || "";
 const PRICING_JSON = process.env.TOKEN_LENS_PRICES_JSON || "";
+const OFFICIAL_USAGE_MODE = process.env.TOKEN_LENS_OFFICIAL_USAGE || "auto";
+const OFFICIAL_TIMEOUT_MS = Number(process.env.TOKEN_LENS_OFFICIAL_TIMEOUT_MS || 5000);
 const DEFAULT_PRICES_PER_MILLION = [
   { pattern: "gpt[-\\s_]?5\\.6[-\\s_]?sol", label: "GPT-5.6 Sol", input: 5.00, cachedInput: 0.50, cacheWriteInput: 6.25, output: 30.00 },
   { pattern: "gpt[-\\s_]?5\\.6[-\\s_]?terra", label: "GPT-5.6 Terra", input: 2.50, cachedInput: 0.25, cacheWriteInput: 3.125, output: 15.00 },
@@ -37,6 +40,8 @@ const MIME = {
 };
 
 let scanPromise = null;
+let officialUsagePromise = null;
+let officialUsageCache = { at: 0, value: null };
 let cache = loadCache();
 
 function loadCache() {
@@ -60,9 +65,9 @@ function saveCache() {
 }
 
 function loadPricing() {
-  const source = PRICING_JSON || (PRICING_FILE ? fs.readFileSync(PRICING_FILE, "utf8") : "");
-  if (!source) return compilePricing(DEFAULT_PRICES_PER_MILLION);
   try {
+    const source = PRICING_JSON || (PRICING_FILE ? fs.readFileSync(PRICING_FILE, "utf8") : "");
+    if (!source) return compilePricing(DEFAULT_PRICES_PER_MILLION);
     const parsed = JSON.parse(source);
     const models = Array.isArray(parsed) ? parsed : parsed.models;
     if (!Array.isArray(models)) throw new Error("pricing data must be an array or { models: [] }");
@@ -140,10 +145,7 @@ async function parseSession(filePath, stat) {
   const lines = readline.createInterface({ input: stream, crlfDelay: Infinity });
 
   for await (const line of lines) {
-    const relevant =
-      line.includes('"type":"session_meta"') ||
-      line.includes('"type":"turn_context"') ||
-      line.includes('"type":"token_count"');
+    const relevant = /"type"\s*:\s*"(?:session_meta|turn_context|token_count)"/.test(line);
     if (!relevant) continue;
 
     try {
@@ -238,6 +240,7 @@ async function scanUsage() {
     .filter((item) => item.rateLimits?.primary || item.rateLimits?.secondary)
     .sort((a, b) => String(b.usageTimestamp).localeCompare(String(a.usageTimestamp)))[0]?.rateLimits || null;
 
+  const official = await queryOfficialUsage();
   return {
     source: process.env.CODEX_HOME ? "$CODEX_HOME/sessions" : "~/.codex/sessions",
     available: fs.existsSync(SESSIONS_DIR),
@@ -251,7 +254,12 @@ async function scanUsage() {
     },
     costSummary: summarizeCosts(normalized),
     sessions: normalized,
-    rateLimits: latestLimit
+    rateLimits: official?.rateLimits || latestLimit,
+    rateLimitsSource: official?.rateLimits ? official.source : (latestLimit ? "local-session-snapshot" : "unavailable"),
+    accountUsage: official?.usage || null,
+    officialQuery: official
+      ? { attempted: true, available: Boolean(official.rateLimits), error: official.error }
+      : { attempted: false, available: false, error: null }
   };
 }
 
@@ -305,6 +313,130 @@ function getUsage() {
   return scanPromise;
 }
 
+function normalizeOfficialWindow(window) {
+  if (!window) return null;
+  return {
+    used_percent: Number(window.usedPercent) || 0,
+    window_minutes: Number(window.windowDurationMins) || 0,
+    resets_at: window.resetsAt == null ? null : Number(window.resetsAt)
+  };
+}
+
+function normalizeOfficialRateLimits(result) {
+  const snapshot = result?.rateLimitsByLimitId?.codex || Object.values(result?.rateLimitsByLimitId || {})[0] || result?.rateLimits;
+  if (!snapshot) return null;
+  return {
+    limit_id: snapshot.limitId ?? "codex",
+    limit_name: snapshot.limitName ?? null,
+    primary: normalizeOfficialWindow(snapshot.primary),
+    secondary: normalizeOfficialWindow(snapshot.secondary),
+    credits: snapshot.credits ?? null,
+    individual_limit: snapshot.individualLimit ?? null,
+    plan_type: snapshot.planType ?? null,
+    rate_limit_reached_type: snapshot.rateLimitReachedType ?? null,
+    spend_control_reached: snapshot.spendControlReached ?? null
+  };
+}
+
+function resolveCodexCommand() {
+  if (process.env.TOKEN_LENS_CODEX_COMMAND) return process.env.TOKEN_LENS_CODEX_COMMAND;
+  return process.platform === "win32" ? "codex.cmd" : "codex";
+}
+
+function resolveCodexExtraArgs() {
+  try {
+    const parsed = JSON.parse(process.env.TOKEN_LENS_CODEX_ARGS_JSON || "[]");
+    return Array.isArray(parsed) && parsed.every((item) => typeof item === "string") ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function queryOfficialUsage() {
+  if (OFFICIAL_USAGE_MODE === "0" || OFFICIAL_USAGE_MODE.toLowerCase() === "off") return Promise.resolve(null);
+  const now = Date.now();
+  if (now - officialUsageCache.at < 20000) return Promise.resolve(officialUsageCache.value);
+  if (officialUsagePromise) return officialUsagePromise;
+
+  officialUsagePromise = new Promise((resolve) => {
+    const command = resolveCodexCommand();
+    const args = [...resolveCodexExtraArgs(), "app-server", "--stdio"];
+    const childEnv = {
+      ...process.env,
+      CODEX_HOME: CODEX_DIR,
+      HOME: os.homedir(),
+      USERPROFILE: os.homedir()
+    };
+    const child = process.platform === "win32" && /\.(?:cmd|bat)$/i.test(command)
+      ? spawn("cmd.exe", ["/d", "/s", "/c", `${command} ${args.join(" ")}`], { env: childEnv, stdio: ["pipe", "pipe", "ignore"], windowsHide: true })
+      : spawn(command, args, { env: childEnv, stdio: ["pipe", "pipe", "ignore"] });
+    let buffer = "";
+    let settled = false;
+    const pending = new Set();
+    const responses = new Map();
+    const completed = new Set();
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.kill();
+      officialUsageCache = { at: Date.now(), value };
+      officialUsagePromise = null;
+      resolve(value);
+    };
+    const unavailable = (error) => ({ source: "codex-app-server", authoritative: false, rateLimits: null, usage: null, error });
+    const timer = setTimeout(() => finish(unavailable("Official Codex app-server query timed out")), OFFICIAL_TIMEOUT_MS);
+    const send = (message) => child.stdin.write(`${JSON.stringify(message)}\n`);
+    const request = (id, method, params = null) => send({ id, method, params });
+    child.on("error", (error) => finish(unavailable(error.message)));
+    child.on("exit", () => finish(unavailable("Official Codex app-server exited before responding")));
+    child.stdout.on("data", (chunk) => {
+      buffer += chunk.toString();
+      let newline;
+      while ((newline = buffer.indexOf("\n")) >= 0) {
+        const line = buffer.slice(0, newline).trim();
+        buffer = buffer.slice(newline + 1);
+        if (!line) continue;
+        let message;
+        try { message = JSON.parse(line); } catch { continue; }
+        if (message.id === 1) {
+          if (message.error) {
+            finish(unavailable(message.error.message || "Official Codex app-server initialization failed"));
+            continue;
+          }
+          send({ method: "initialized" });
+          pending.add(2);
+          pending.add(3);
+          request(2, "account/rateLimits/read");
+          request(3, "account/usage/read");
+          continue;
+        }
+        if (!message.id || !pending.has(message.id)) continue;
+        responses.set(message.id, message.result || null);
+        completed.add(message.id);
+        if (completed.has(2) && completed.has(3)) {
+          const rateLimits = normalizeOfficialRateLimits(responses.get(2));
+          const usage = responses.get(3);
+          finish({
+            source: "codex-app-server",
+            authoritative: Boolean(rateLimits),
+            rateLimits,
+            usage: usage || null,
+            error: rateLimits ? null : "Official rate-limit snapshot unavailable"
+          });
+        }
+      }
+    });
+    send({ id: 1, method: "initialize", params: { clientInfo: { name: "codex-token-lens", version: "1.0.0" }, capabilities: { experimentalApi: true } } });
+  }).catch(() => {
+    officialUsagePromise = null;
+    const value = { source: "codex-app-server", authoritative: false, rateLimits: null, usage: null, error: "Official Codex app-server query failed" };
+    officialUsageCache = { at: Date.now(), value };
+    return value;
+  });
+  return officialUsagePromise;
+}
+
 function sendJson(response, status, value) {
   response.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
@@ -316,7 +448,13 @@ function sendJson(response, status, value) {
 
 function serveStatic(request, response) {
   const requestPath = new URL(request.url, `http://${HOST}`).pathname;
-  const relative = requestPath === "/" ? "index.html" : decodeURIComponent(requestPath.slice(1));
+  let relative;
+  try {
+    relative = requestPath === "/" ? "index.html" : decodeURIComponent(requestPath.slice(1));
+  } catch {
+    response.writeHead(400, securityHeaders());
+    return response.end("Bad request");
+  }
   const resolved = path.resolve(APP_DIR, relative);
   if (!resolved.startsWith(`${path.resolve(APP_DIR)}${path.sep}`) && resolved !== path.join(APP_DIR, "index.html")) {
     response.writeHead(403);

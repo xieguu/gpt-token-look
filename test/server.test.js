@@ -122,16 +122,102 @@ test("honors custom pricing JSON", { timeout: 15000 }, async (context) => {
   assert.equal(data.pricing.models[0].label, "Custom Model");
 });
 
+test("accepts JSONL event type fields with whitespace", { timeout: 15000 }, async (context) => {
+  const fixture = createFixture(context);
+  const sessionId = "anonymous-session-spaced";
+  const events = [
+    event("2026-07-28T01:00:00.000Z", "session_meta", { id: sessionId, timestamp: "2026-07-28T01:00:00.000Z", cwd: path.join(fixture.root, "example-project") }),
+    event("2026-07-28T01:00:01.000Z", "turn_context", { model: "gpt-5.6-luna" }),
+    event("2026-07-28T01:00:02.000Z", "event_msg", { type: "token_count", info: { total_token_usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 } } })
+  ];
+  const spaced = events.map((item) => JSON.stringify(item).replaceAll('"type":"', '"type": "')).join("\n");
+  fs.writeFileSync(path.join(fixture.sessionDir, `${sessionId}.jsonl`), `${spaced}\n`);
+
+  const data = await fetchUsage(fixture);
+  assert.equal(data.sessionCount, 1);
+  assert.equal(data.sessions[0].model, "gpt-5.6-luna");
+  assert.equal(data.sessions[0].total, 15);
+});
+
+test("falls back when the configured pricing file is missing", { timeout: 15000 }, async (context) => {
+  const fixture = createFixture(context);
+  const data = await fetchUsage(fixture, {
+    TOKEN_LENS_PRICING_FILE: path.join(fixture.root, "missing-pricing.json")
+  });
+  assert.ok(data.pricing.models.length > 0);
+});
+
+test("returns 400 for malformed static paths without stopping the server", { timeout: 15000 }, async (context) => {
+  const fixture = createFixture(context);
+  const child = spawn(process.execPath, ["server.js"], {
+    cwd: projectRoot,
+    windowsHide: true,
+    env: { ...process.env, CODEX_HOME: fixture.codexHome, TOKEN_LENS_CACHE_DIR: fixture.cacheDir, TOKEN_LENS_PORT: "0" },
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  try {
+    const url = await waitForUrl(child);
+    const malformed = await fetch(`${url}/%E0%A4%A`);
+    assert.equal(malformed.status, 400);
+    const home = await fetch(url);
+    assert.equal(home.status, 200);
+  } finally {
+    if (!child.killed) child.kill();
+  }
+});
+
+test("reports local snapshot as the rate-limit source when official lookup is disabled", { timeout: 15000 }, async (context) => {
+  const fixture = createFixture(context);
+  writeSession(fixture, "anonymous-session-limit-source", [
+    event("2026-07-28T01:00:00.000Z", "session_meta", { id: "anonymous-session-limit-source" }),
+    event("2026-07-28T01:00:01.000Z", "event_msg", {
+      type: "token_count",
+      info: { total_token_usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 } },
+      rate_limits: { limit_id: "codex", primary: { used_percent: 42, window_minutes: 300, resets_at: 1785210000 }, secondary: null }
+    })
+  ]);
+  const data = await fetchUsage(fixture);
+  assert.equal(data.rateLimitsSource, "local-session-snapshot");
+  assert.equal(data.rateLimits.primary.used_percent, 42);
+  assert.equal(data.officialQuery.attempted, false);
+});
+
+test("uses the official app-server snapshot when available", { timeout: 15000 }, async (context) => {
+  const fixture = createFixture(context);
+  const fakeCodex = path.join(fixture.root, "fake-codex.js");
+  fs.writeFileSync(fakeCodex, `
+    const readline = require("node:readline");
+    const lines = readline.createInterface({ input: process.stdin });
+    lines.on("line", (line) => {
+      let message; try { message = JSON.parse(line); } catch { return; }
+      if (message.id === 1) process.stdout.write(JSON.stringify({ id: 1, result: {} }) + "\\n");
+      if (message.id === 2) process.stdout.write(JSON.stringify({ id: 2, result: { rateLimits: { limitId: "codex", primary: { usedPercent: 7, windowDurationMins: 300, resetsAt: 1785210000 }, secondary: null } } }) + "\\n");
+      if (message.id === 3) process.stdout.write(JSON.stringify({ id: 3, result: { summary: { lifetimeTokens: 12345, peakDailyTokens: 6789 }, dailyUsageBuckets: [] } }) + "\\n");
+    });
+  `);
+  const data = await fetchUsage(fixture, {
+    TOKEN_LENS_OFFICIAL_USAGE: "auto",
+    TOKEN_LENS_CODEX_COMMAND: process.execPath,
+    TOKEN_LENS_CODEX_ARGS_JSON: JSON.stringify([fakeCodex]),
+    TOKEN_LENS_OFFICIAL_TIMEOUT_MS: "3000"
+  });
+  assert.equal(data.rateLimitsSource, "codex-app-server");
+  assert.equal(data.rateLimits.primary.used_percent, 7);
+  assert.equal(data.accountUsage.summary.lifetimeTokens, 12345);
+  assert.equal(data.officialQuery.available, true);
+});
+
 async function fetchUsage(fixture, extraEnv = {}) {
   const child = spawn(process.execPath, ["server.js"], {
     cwd: projectRoot,
     windowsHide: true,
     env: {
       ...process.env,
-      ...extraEnv,
       CODEX_HOME: fixture.codexHome,
       TOKEN_LENS_CACHE_DIR: fixture.cacheDir,
-      TOKEN_LENS_PORT: "0"
+      TOKEN_LENS_PORT: "0",
+      TOKEN_LENS_OFFICIAL_USAGE: "0",
+      ...extraEnv
     },
     stdio: ["ignore", "pipe", "pipe"]
   });

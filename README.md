@@ -10,6 +10,8 @@
 - 默认只显示当天会话；可切换 Today / 7d / 30d / All，或使用自定义日期范围和模型筛选
 - 汇总 input、cached input、cache write input、output、reasoning output 和 total tokens
 - 显示最新 `primary` / `secondary` 使用限额与重置时间
+- 优先通过 Codex 官方 app-server `account/rateLimits/read` 查询账户级额度；不可用时回退到本地 JSONL 快照，并在面板标注来源
+- 通过官方 app-server `account/usage/read` 读取账户级每日 token 汇总（如果当前 CLI 已登录）
 - 按内置或自定义价格表估算 API 等价美元成本
 - 导出当前筛选结果为 CSV 或 JSON
 - 自动刷新，默认每 30 秒同步一次
@@ -51,6 +53,9 @@ Linux/macOS 也可以运行：
 | `TOKEN_LENS_CACHE_DIR` | 系统临时目录 | 增量扫描缓存目录 |
 | `TOKEN_LENS_PRICES_JSON` | 空 | 自定义 API 价格 JSON |
 | `TOKEN_LENS_PRICING_FILE` | 空 | 自定义 API 价格 JSON 文件路径 |
+| `TOKEN_LENS_OFFICIAL_USAGE` | `auto` | 官方额度查询：`auto` 自动尝试，`0` 或 `off` 禁用 |
+| `TOKEN_LENS_OFFICIAL_TIMEOUT_MS` | `5000` | 官方 app-server 查询超时 |
+| `TOKEN_LENS_CODEX_COMMAND` | 自动检测 | 自定义 Codex CLI 命令路径 |
 
 PowerShell 示例：
 
@@ -80,6 +85,16 @@ $data = Invoke-RestMethod http://127.0.0.1:4173/api/usage
 $data.costSummary
 $data.sessions
 ```
+
+## 额度查询口径
+
+Token Lens 按以下优先级显示额度：
+
+1. **官方账户快照**：调用本机 Codex CLI app-server 的 `account/rateLimits/read`，读取官方返回的 `primary`、`secondary`、重置时间、套餐和 credits 字段。
+2. **本地会话快照**：官方查询不可用时，从 `~/.codex/sessions/**/*.jsonl` 最近的 `event_msg.rate_limits` 回退。这是历史事件里的快照，不保证代表当前账户状态。
+3. **不可用**：两者都没有数据时显示不可用，不用 token 数量推算额度百分比。
+
+账户级每日 token 汇总来自官方 app-server 的 `account/usage/read`。它和本地会话逐条汇总是两个口径，页面会分别展示。
 
 ## 美元估算
 

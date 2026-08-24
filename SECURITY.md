@@ -10,6 +10,8 @@ It does not read or upload:
 - API keys
 - GitHub credentials
 
+When enabled, the server starts the locally installed Codex CLI app-server and asks it for account-level rate limits and token usage. Authentication remains owned by Codex; Token Lens does not read or parse `auth.json`. Set `TOKEN_LENS_OFFICIAL_USAGE=0` to use local JSONL snapshots only.
+
 The API endpoint is local:
 
 ```http

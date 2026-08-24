@@ -11,6 +11,8 @@ const state = {
   period: "today",
   sessions: [],
   rateLimits: null,
+  rateLimitsSource: "unavailable",
+  accountUsage: null,
   costSummary: null,
   pricing: null,
   source: "",
@@ -72,6 +74,7 @@ function render() {
   $("#changeBadge").textContent = filterLabel();
   $("#costUsd").textContent = money.format(cost);
   $("#costSummary").textContent = priced ? `${priced}/${sessions.length} sessions priced` : "No priced model in current filter";
+  renderAccountUsage();
 
   renderRateLimits();
   $("#averageTokens").textContent = compact.format(average);
@@ -80,6 +83,19 @@ function render() {
   renderChart(sessions);
   renderTable(sessions);
   renderInsights(sessions, input, cachedInput, output, cost);
+}
+
+function renderAccountUsage() {
+  const usage = state.accountUsage;
+  const summary = usage?.summary;
+  const lifetime = Number(summary?.lifetimeTokens);
+  const peak = Number(summary?.peakDailyTokens);
+  $("#accountUsageBadge").textContent = summary ? "Official" : "Unavailable";
+  $("#lifetimeTokens").textContent = Number.isFinite(lifetime) && lifetime >= 0 ? compact.format(lifetime) : "--";
+  $("#accountUsageSummary").textContent = summary
+    ? `${usage.dailyUsageBuckets?.length || 0} daily buckets returned`
+    : "Requires a logged-in Codex app-server.";
+  $("#peakDailyTokens").textContent = Number.isFinite(peak) && peak >= 0 ? `Peak day: ${compact.format(peak)}` : "Peak day: --";
 }
 
 function filterLabel() {
@@ -102,7 +118,8 @@ function renderRateLimits() {
   renderLimit("primary", state.rateLimits?.primary);
   renderLimit("secondary", state.rateLimits?.secondary);
   const windowText = state.rateLimits?.primary?.window_minutes ? formatWindow(Number(state.rateLimits.primary.window_minutes)) : "Current window";
-  $("#limitWindow").textContent = windowText;
+  const sourceText = state.rateLimitsSource === "codex-app-server" ? "Official" : state.rateLimitsSource === "local-session-snapshot" ? "Local snapshot" : "Unavailable";
+  $("#limitWindow").textContent = `${windowText} · ${sourceText}`;
 }
 
 function renderLimit(kind, limit) {
@@ -278,6 +295,8 @@ async function loadRealUsage() {
     if (!response.ok) throw new Error(data.detail || data.error || `HTTP ${response.status}`);
     state.sessions = data.sessions || [];
     state.rateLimits = data.rateLimits;
+    state.rateLimitsSource = data.rateLimitsSource || "unavailable";
+    state.accountUsage = data.accountUsage;
     state.costSummary = data.costSummary;
     state.pricing = data.pricing;
     state.source = data.source;
