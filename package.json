@@ -18,7 +18,7 @@
   },
   "scripts": {
     "start": "node server.js",
-    "check": "node --check server.js && node --check app.js",
+    "check": "node --check server.js && node --check sessions.js && node --check limits.js && node --check pricing.js && node --check app.js && node --check data.js && node --check chart.js && node --check table.js && node --check notifications.js",
     "test": "node --test"
   },
   "keywords": [

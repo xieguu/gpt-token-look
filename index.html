@@ -60,7 +60,7 @@
           <div class="card-label"><span>API cost estimate</span><span class="metric-badge">USD</span></div>
           <div class="main-metric"><strong id="costUsd">$0.0000</strong><span>USD</span> <small class="delta" id="costDelta"></small></div>
           <p class="muted" id="costSummary">Waiting for data</p>
-          <p class="muted" id="pricingStatus">Estimated from the local pricing table. This is not your subscription quota or invoice.</p>
+          <p class="muted" id="pricingStatus">价格更新于未知。Estimated from the local pricing table. This is not your subscription quota or invoice.</p>
         </article>
 
         <article class="stat-card">
@@ -72,14 +72,15 @@
 
         <article class="stat-card limit-card">
           <div class="card-label"><span>Codex limits</span><span class="metric-badge" id="limitWindow">Current window</span></div>
+          <div class="limit-source" id="limitSource" data-source="unavailable"><span class="source-dot"></span><span>额度不可用</span></div>
           <div class="limit-grid">
             <div class="limit-item">
               <div class="budget-ring" id="primaryRing"><div><strong id="primaryPercent">--</strong><small>remaining</small></div></div>
-              <strong>Primary</strong><span id="primaryDetail">Waiting for data</span><small id="primaryReset">Not provided</small>
+              <strong>Primary</strong><span id="primaryDetail">Waiting for data</span><small id="primaryUpdated">更新时间未知</small><small id="primaryReset">Not provided</small>
             </div>
             <div class="limit-item">
               <div class="budget-ring" id="secondaryRing"><div><strong id="secondaryPercent">--</strong><small>remaining</small></div></div>
-              <strong>Secondary</strong><span id="secondaryDetail">Waiting for data</span><small id="secondaryReset">Not provided</small>
+              <strong>Secondary</strong><span id="secondaryDetail">Waiting for data</span><small id="secondaryUpdated">更新时间未知</small><small id="secondaryReset">Not provided</small>
             </div>
           </div>
         </article>
@@ -140,6 +141,10 @@
       <button class="secondary-button" id="retryButton" type="button">Retry</button>
     </div>
   </div>
+  <script src="./data.js"></script>
+  <script src="./chart.js"></script>
+  <script src="./table.js"></script>
+  <script src="./notifications.js"></script>
   <script src="./app.js"></script>
 </body>
 </html>

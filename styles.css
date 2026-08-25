@@ -261,6 +261,31 @@ h1 {
   font: 500 10px "JetBrains Mono", "Cascadia Code", monospace;
 }
 
+.limit-source {
+  width: max-content;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 10px;
+  padding: 5px 9px;
+  border-radius: 999px;
+  color: #315137;
+  background: rgba(112, 198, 125, .18);
+  font: 600 10px "JetBrains Mono", "Cascadia Code", monospace;
+}
+
+.source-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #47a55b;
+}
+
+.limit-source[data-source="snapshot"] { color: #755515; background: rgba(241, 190, 69, .22); }
+.limit-source[data-source="snapshot"] .source-dot { background: #d59b20; }
+.limit-source[data-source="unavailable"] { color: var(--muted); background: rgba(125, 134, 128, .14); }
+.limit-source[data-source="unavailable"] .source-dot { background: #8c958e; }
+
 .main-metric, .secondary-metric {
   display: flex;
   align-items: baseline;
@@ -400,6 +425,21 @@ h1 {
   font-size: 10px;
   line-height: 1.4;
 }
+
+.limit-item small[data-freshness="aging"] {
+  color: #a6720e;
+  font-weight: 700;
+}
+
+.limit-item small[data-freshness="stale"] {
+  color: #ca4538;
+  font-weight: 700;
+}
+
+#pricingStatus[data-status="warning"] { color: #97690d; }
+#pricingStatus[data-status="error"] { color: #c44338; font-weight: 600; }
+#pricingStatus[data-status="fresh"] { color: var(--muted); }
+.empty-state { padding: 28px 12px !important; text-align: center; }
 
 .mini-bars {
   height: 47px;

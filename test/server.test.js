@@ -54,6 +54,7 @@ test("serves aggregated usage, pricing estimate, and primary/secondary limits", 
   assert.equal(Number(data.costSummary.totalUsd.toFixed(6)), 0.002305);
   assert.equal(data.costSummary.unpricedSessionCount, 0);
   assert.equal(data.pricing.source, "https://platform.openai.com/pricing");
+  assert.equal(data.pricing.updatedAt, "2026-08-25T00:00:00+08:00");
   assert.ok(data.pricing.models.some((item) => item.label === "GPT-5.6 Luna" && item.cacheWriteInput === 1.25));
   assert.ok(fs.readdirSync(fixture.cacheDir).some((name) => name.startsWith("usage-")));
 });
@@ -215,6 +216,7 @@ test("reports local snapshot as the rate-limit source when official lookup is di
   ]);
   const data = await fetchUsage(fixture);
   assert.equal(data.rateLimitsSource, "local-session-snapshot");
+  assert.equal(data.rateLimitsUpdatedAt, "2026-07-28T01:00:01.000Z");
   assert.equal(data.rateLimits.primary.used_percent, 42);
   assert.equal(data.rateLimits.primary.remaining_percent, 58);
   assert.equal(data.officialQuery.attempted, false);
@@ -240,6 +242,7 @@ test("uses the official app-server snapshot when available", { timeout: 15000 },
     TOKEN_LENS_OFFICIAL_TIMEOUT_MS: "3000"
   });
   assert.equal(data.rateLimitsSource, "codex-app-server");
+  assert.ok(!Number.isNaN(new Date(data.rateLimitsUpdatedAt).getTime()));
   assert.equal(data.rateLimits.primary.used_percent, 7);
   assert.equal(data.rateLimits.primary.remaining_percent, 93);
   assert.equal(data.accountUsage.summary.lifetimeTokens, 12345);
@@ -272,6 +275,9 @@ async function fetchUsage(fixture, extraEnv = {}) {
     assert.match(html, /Codex Token Lens/);
     assert.match(html, /Export CSV/);
     assert.match(html, /data-period="today"/);
+    assert.match(html, /id="limitSource"/);
+    assert.match(html, /src="\.\/data\.js"/);
+    assert.match(html, /src="\.\/notifications\.js"/);
     return await response.json();
   } finally {
     if (!child.killed) child.kill();
