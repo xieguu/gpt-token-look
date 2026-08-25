@@ -20,6 +20,7 @@
         <button class="icon-button" id="themeToggle" type="button" aria-label="Toggle dark mode" title="Toggle theme">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v2m0 14v2M3 12h2m14 0h2M5.64 5.64l1.42 1.42m9.88 9.88 1.42 1.42m0-12.72-1.42 1.42M7.06 16.94l-1.42 1.42"/><circle cx="12" cy="12" r="4"/></svg>
         </button>
+        <button class="secondary-button" id="updatePricingButton" type="button">Update prices</button>
         <button class="primary-button" id="refreshButton" type="button"><span>↻</span> Refresh</button>
       </div>
     </header>
@@ -40,6 +41,7 @@
       </section>
 
       <section class="filter-panel" aria-label="Filters">
+        <label>Search<input id="searchInput" type="text" placeholder="Session name or model…"></label>
         <label>Model<select id="modelFilter"><option value="all">All models</option></select></label>
         <label>Start date<input id="dateFrom" type="date"></label>
         <label>End date<input id="dateTo" type="date"></label>
@@ -49,16 +51,16 @@
       <section class="stats-grid" aria-label="Token usage overview">
         <article class="stat-card stat-card-main">
           <div class="card-label"><span>Total tokens</span><span class="metric-badge" id="changeBadge">Last 30d</span></div>
-          <div class="main-metric"><strong id="totalTokens">0</strong><span>tokens</span></div>
+          <div class="main-metric"><strong id="totalTokens">0</strong><span>tokens</span> <small class="delta" id="tokenDelta"></small></div>
           <div class="split-bar" aria-hidden="true"><span id="inputBar"></span><span id="outputBar"></span></div>
           <div class="legend"><span><i class="input-dot"></i>Input <b id="inputTokens">0</b></span><span><i class="output-dot"></i>Output <b id="outputTokens">0</b></span></div>
         </article>
 
         <article class="stat-card">
           <div class="card-label"><span>API cost estimate</span><span class="metric-badge">USD</span></div>
-          <div class="main-metric"><strong id="costUsd">$0.0000</strong><span>USD</span></div>
+          <div class="main-metric"><strong id="costUsd">$0.0000</strong><span>USD</span> <small class="delta" id="costDelta"></small></div>
           <p class="muted" id="costSummary">Waiting for data</p>
-          <p class="muted">Estimated from the pricing table. This is not your subscription quota or invoice.</p>
+          <p class="muted" id="pricingStatus">Estimated from the local pricing table. This is not your subscription quota or invoice.</p>
         </article>
 
         <article class="stat-card">
@@ -72,11 +74,11 @@
           <div class="card-label"><span>Codex limits</span><span class="metric-badge" id="limitWindow">Current window</span></div>
           <div class="limit-grid">
             <div class="limit-item">
-              <div class="budget-ring" id="primaryRing"><div><strong id="primaryPercent">0%</strong><small>primary</small></div></div>
+              <div class="budget-ring" id="primaryRing"><div><strong id="primaryPercent">--</strong><small>remaining</small></div></div>
               <strong>Primary</strong><span id="primaryDetail">Waiting for data</span><small id="primaryReset">Not provided</small>
             </div>
             <div class="limit-item">
-              <div class="budget-ring" id="secondaryRing"><div><strong id="secondaryPercent">0%</strong><small>secondary</small></div></div>
+              <div class="budget-ring" id="secondaryRing"><div><strong id="secondaryPercent">--</strong><small>remaining</small></div></div>
               <strong>Secondary</strong><span id="secondaryDetail">Waiting for data</span><small id="secondaryReset">Not provided</small>
             </div>
           </div>
@@ -94,7 +96,13 @@
         <article class="panel chart-panel">
           <div class="panel-heading">
             <div><p class="eyebrow">USAGE TREND</p><h2>Daily usage</h2></div>
-            <div class="chart-legend"><span><i class="input-dot"></i>Input</span><span><i class="output-dot"></i>Output</span></div>
+            <div class="chart-header-right">
+              <div class="granularity-toggle" id="granularityToggle">
+                <button class="granularity-btn secondary-button active" data-granularity="day" type="button">Day</button>
+                <button class="granularity-btn secondary-button" data-granularity="hour" type="button">Hour</button>
+              </div>
+              <div class="chart-legend"><span><i class="input-dot"></i>Input</span><span><i class="output-dot"></i>Output</span></div>
+            </div>
           </div>
           <div class="chart-wrap"><div class="y-axis" id="yAxis" aria-hidden="true"><span>0</span><span>0</span><span>0</span><span>0</span><span>0</span></div><div class="chart" id="usageChart" aria-label="Daily token usage bar chart"></div></div>
         </article>
@@ -123,6 +131,14 @@
     </main>
 
     <footer><span>Token Lens / local read-only Codex usage metadata</span><span id="sourcePath">~/.codex/sessions</span></footer>
+    <div class="alert-banner" id="alertBanner" hidden>
+      <span id="alertMsg"></span>
+      <button class="secondary-button" id="enableNotifications" type="button">Enable notifications</button>
+    </div>
+    <div class="error-banner" id="errorBanner" style="display:none">
+      <span id="errorMsg"></span>
+      <button class="secondary-button" id="retryButton" type="button">Retry</button>
+    </div>
   </div>
   <script src="./app.js"></script>
 </body>

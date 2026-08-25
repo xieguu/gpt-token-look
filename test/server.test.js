@@ -44,7 +44,9 @@ test("serves aggregated usage, pricing estimate, and primary/secondary limits", 
   assert.equal(data.sessions[0].reasoningOutput, 50);
   assert.equal(data.sessions[0].total, 1500);
   assert.equal(data.rateLimits.primary.used_percent, 12);
+  assert.equal(data.rateLimits.primary.remaining_percent, 88);
   assert.equal(data.rateLimits.secondary.used_percent, 34);
+  assert.equal(data.rateLimits.secondary.remaining_percent, 66);
   assert.equal(data.sessions[0].costBreakdown.estimated, true);
   assert.equal(data.sessions[0].costBreakdown.modelMatched, "GPT-5.6 Luna");
   assert.equal(Number(data.sessions[0].costUsd.toFixed(6)), 0.002305);
@@ -147,6 +149,41 @@ test("falls back when the configured pricing file is missing", { timeout: 15000 
   assert.ok(data.pricing.models.length > 0);
 });
 
+test("exposes configurable cache TTL and scan concurrency diagnostics", { timeout: 15000 }, async (context) => {
+  const fixture = createFixture(context);
+  const data = await fetchUsage(fixture, {
+    TOKEN_LENS_CACHE_TTL: "2m",
+    TOKEN_LENS_SCAN_CONCURRENCY: "7"
+  });
+  assert.equal(data.diagnostics.cacheTtlMs, 120000);
+  assert.equal(data.diagnostics.scanConcurrency, 7);
+  assert.equal(data.diagnostics.cacheExpired, true);
+});
+
+test("optionally protects the usage API with a token", { timeout: 15000 }, async (context) => {
+  const fixture = createFixture(context);
+  const child = spawn(process.execPath, ["server.js"], {
+    cwd: projectRoot,
+    windowsHide: true,
+    env: {
+      ...process.env,
+      CODEX_HOME: fixture.codexHome,
+      TOKEN_LENS_CACHE_DIR: fixture.cacheDir,
+      TOKEN_LENS_PORT: "0",
+      TOKEN_LENS_OFFICIAL_USAGE: "0",
+      TOKEN_LENS_API_TOKEN: "test-token"
+    },
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  try {
+    const url = await waitForUrl(child);
+    assert.equal((await fetch(`${url}/api/usage`)).status, 401);
+    assert.equal((await fetch(`${url}/api/usage`, { headers: { "x-token-lens-token": "test-token" } })).status, 200);
+  } finally {
+    if (!child.killed) child.kill();
+  }
+});
+
 test("returns 400 for malformed static paths without stopping the server", { timeout: 15000 }, async (context) => {
   const fixture = createFixture(context);
   const child = spawn(process.execPath, ["server.js"], {
@@ -179,6 +216,7 @@ test("reports local snapshot as the rate-limit source when official lookup is di
   const data = await fetchUsage(fixture);
   assert.equal(data.rateLimitsSource, "local-session-snapshot");
   assert.equal(data.rateLimits.primary.used_percent, 42);
+  assert.equal(data.rateLimits.primary.remaining_percent, 58);
   assert.equal(data.officialQuery.attempted, false);
 });
 
@@ -203,6 +241,7 @@ test("uses the official app-server snapshot when available", { timeout: 15000 },
   });
   assert.equal(data.rateLimitsSource, "codex-app-server");
   assert.equal(data.rateLimits.primary.used_percent, 7);
+  assert.equal(data.rateLimits.primary.remaining_percent, 93);
   assert.equal(data.accountUsage.summary.lifetimeTokens, 12345);
   assert.equal(data.officialQuery.available, true);
 });

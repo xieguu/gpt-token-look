@@ -10,11 +10,15 @@
 - 默认只显示当天会话；可切换 Today / 7d / 30d / All，或使用自定义日期范围和模型筛选
 - 汇总 input、cached input、cache write input、output、reasoning output 和 total tokens
 - 显示最新 `primary` / `secondary` 使用限额与重置时间
+- 额度圆环主数字显示剩余百分比，并同时标明已用百分比、窗口长度和重置时间
 - 优先通过 Codex 官方 app-server `account/rateLimits/read` 查询账户级额度；不可用时回退到本地 JSONL 快照，并在面板标注来源
 - 通过官方 app-server `account/usage/read` 读取账户级每日 token 汇总（如果当前 CLI 已登录）
 - 按内置或自定义价格表估算 API 等价美元成本
+- 默认价格表位于项目目录的 `pricing.json`；界面右上角 `Update prices` 会按需抓取官方 pricing 页面，解析成功后原子写回这个文件。不会自动定时联网。
 - 导出当前筛选结果为 CSV 或 JSON
 - 自动刷新，默认每 30 秒同步一次
+- 支持会话名称/模型搜索、Today 的小时粒度、与上一周期的 token/成本对比和单会话明细复制
+- 可选本地费用/额度告警和浏览器通知
 - 只读取本地统计字段，不读取会话正文、工具输出、`auth.json` 或 API key
 
 ## 快速开始
@@ -53,6 +57,11 @@ Linux/macOS 也可以运行：
 | `TOKEN_LENS_CACHE_DIR` | 系统临时目录 | 增量扫描缓存目录 |
 | `TOKEN_LENS_PRICES_JSON` | 空 | 自定义 API 价格 JSON |
 | `TOKEN_LENS_PRICING_FILE` | 空 | 自定义 API 价格 JSON 文件路径 |
+| `TOKEN_LENS_CACHE_TTL` | `15m` | 增量缓存 TTL；设为 `0` 每次请求全量扫描 |
+| `TOKEN_LENS_SCAN_CONCURRENCY` | `3` | 并发解析 JSONL 文件数（1-32） |
+| `TOKEN_LENS_API_TOKEN` | 空 | 可选 API 保护令牌；请求使用 `x-token-lens-token` header 或 `?token=` |
+| `TOKEN_LENS_DAILY_COST_ALERT_USD` | 空 | 当当前筛选费用达到阈值时显示告警 |
+| `TOKEN_LENS_RATE_LIMIT_ALERT_PERCENT` | `10` | 剩余额度低于该百分比时显示告警 |
 | `TOKEN_LENS_OFFICIAL_USAGE` | `auto` | 官方额度查询：`auto` 自动尝试，`0` 或 `off` 禁用 |
 | `TOKEN_LENS_OFFICIAL_TIMEOUT_MS` | `5000` | 官方 app-server 查询超时 |
 | `TOKEN_LENS_CODEX_COMMAND` | 自动检测 | 自定义 Codex CLI 命令路径 |
@@ -70,6 +79,12 @@ npm.cmd start
 ```http
 GET http://127.0.0.1:4173/api/usage
 ```
+
+```http
+POST http://127.0.0.1:4173/api/pricing/update
+```
+
+更新接口抓取官方 pricing 页面、校验模型价格，并写回项目目录的 `pricing.json`。如果页面启用 Cloudflare、需要 JavaScript 或结构变化，旧价格会保留并返回失败原因。
 
 返回字段包括：
 
@@ -98,7 +113,7 @@ Token Lens 按以下优先级显示额度：
 
 ## 美元估算
 
-价格单位为 USD / 1M tokens。默认价格表来自 OpenAI 官方 API pricing 页面：<https://platform.openai.com/pricing>
+价格单位为 USD / 1M tokens。更新按钮使用 OpenAI 官方 API pricing 页面：<https://platform.openai.com/pricing>
 
 内置默认值：
 

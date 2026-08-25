@@ -1,4 +1,14 @@
-const THEME_KEY = "codex-token-lens-theme";
+const THEME_KEY = "codex-theme";
+const API_TOKEN_KEY = "codex-token-lens-api-token";
+const NOTIFICATION_KEY = "codex-token-lens-last-notification";
+
+const tokenFromUrl = new URLSearchParams(window.location.search).get("token");
+if (tokenFromUrl) {
+  sessionStorage.setItem(API_TOKEN_KEY, tokenFromUrl);
+  const cleanUrl = new URL(window.location.href);
+  cleanUrl.searchParams.delete("token");
+  history.replaceState(null, "", `${cleanUrl.pathname}${cleanUrl.search}${cleanUrl.hash}`);
+}
 
 function localDateIso(date = new Date()) {
   const year = date.getFullYear();
@@ -19,7 +29,11 @@ const state = {
   loading: false,
   modelFilter: "all",
   dateFrom: "",
-  dateTo: ""
+  dateTo: "",
+  searchQuery: "",
+  chartGranularity: "day",
+  error: null,
+  alerts: { dailyCostUsd: null, remainingPercent: 10 }
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -27,6 +41,7 @@ const $$ = (selector) => [...document.querySelectorAll(selector)];
 const compact = new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 });
 const integer = new Intl.NumberFormat("en");
 const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 4, maximumFractionDigits: 4 });
+const pct = new Intl.NumberFormat("en", { style: "percent", signDisplay: "exceptZero", minimumFractionDigits: 0, maximumFractionDigits: 1 });
 
 function sessionDate(item) {
   if (item.date) return String(item.date).slice(0, 10);
@@ -47,11 +62,84 @@ function filteredSessions() {
   if (state.modelFilter !== "all") result = result.filter((item) => item.model === state.modelFilter);
   if (state.dateFrom) result = result.filter((item) => (item.date || "") >= state.dateFrom);
   if (state.dateTo) result = result.filter((item) => (item.date || "") <= state.dateTo);
+  if (state.searchQuery) {
+    const q = state.searchQuery.toLowerCase();
+    result = result.filter((item) => (item.name || "").toLowerCase().includes(q) || (item.model || "").toLowerCase().includes(q));
+  }
   return result;
 }
 
 function sum(items, field) {
   return items.reduce((total, item) => total + Number(item[field] || 0), 0);
+}
+
+function setState(patch, shouldRender = true) {
+  Object.assign(state, patch);
+  if (shouldRender) render();
+}
+
+function matchesSecondaryFilters(item) {
+  if (state.modelFilter !== "all" && item.model !== state.modelFilter) return false;
+  if (state.searchQuery) {
+    const q = state.searchQuery.toLowerCase();
+    if (!(item.name || "").toLowerCase().includes(q) && !(item.model || "").toLowerCase().includes(q)) return false;
+  }
+  return true;
+}
+
+function comparisonWindow() {
+  const day = 86400000;
+  const now = new Date();
+  if (state.dateFrom || state.dateTo) {
+    const currentStart = new Date(`${state.dateFrom || state.dateTo}T00:00:00`).getTime();
+    const currentEnd = new Date(`${state.dateTo || state.dateFrom}T23:59:59.999`).getTime();
+    const duration = Math.max(day, currentEnd - currentStart + 1);
+    return { from: currentStart - duration, to: currentStart, label: "previous range" };
+  }
+  if (state.period === "today") {
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    return { from: today - day, to: today, label: "yesterday" };
+  }
+  if (state.period === "7" || state.period === "30") {
+    const duration = Number(state.period) * day;
+    const currentStart = Date.now() - duration;
+    return { from: currentStart - duration, to: currentStart, label: `previous ${state.period}d` };
+  }
+  return null;
+}
+
+function comparisonSessions() {
+  const window = comparisonWindow();
+  if (!window) return { sessions: null, label: "" };
+  return {
+    label: window.label,
+    sessions: state.sessions.filter((item) => {
+      const timestamp = new Date(item.updatedAt || `${item.date}T12:00:00`).getTime();
+      return matchesSecondaryFilters(item) && timestamp >= window.from && timestamp < window.to;
+    })
+  };
+}
+
+function computeComparison(sessions) {
+  const comparison = comparisonSessions();
+  if (!sessions.length || !comparison.sessions) return null;
+  const prevTotal = sum(comparison.sessions, "total") || sum(comparison.sessions, "input") + sum(comparison.sessions, "output");
+  const curTotal = sum(sessions, "total") || sum(sessions, "input") + sum(sessions, "output");
+  const prevCost = sum(comparison.sessions, "costUsd");
+  const curCost = sum(sessions, "costUsd");
+  if (!prevTotal && !prevCost) return null;
+  return {
+    tokens: prevTotal ? (curTotal - prevTotal) / prevTotal : null,
+    cost: prevCost ? (curCost - prevCost) / prevCost : null,
+    label: comparison.label
+  };
+}
+
+function formatDelta(ratio) {
+  if (ratio == null || !Number.isFinite(ratio)) return "";
+  const text = pct.format(ratio);
+  const cls = ratio > 0 ? "delta-up" : ratio < 0 ? "delta-down" : "";
+  return `<span class="${cls}">${text}</span>`;
 }
 
 function render() {
@@ -74,15 +162,20 @@ function render() {
   $("#changeBadge").textContent = filterLabel();
   $("#costUsd").textContent = money.format(cost);
   $("#costSummary").textContent = priced ? `${priced}/${sessions.length} sessions priced` : "No priced model in current filter";
-  renderAccountUsage();
 
+  const comp = computeComparison(sessions);
+  $("#tokenDelta").innerHTML = comp?.tokens != null ? `${formatDelta(comp.tokens)} <span class="delta-label">vs ${comp.label}</span>` : "";
+  $("#costDelta").innerHTML = comp?.cost != null ? `${formatDelta(comp.cost)} <span class="delta-label">vs ${comp.label}</span>` : "";
+
+  renderAccountUsage();
   renderRateLimits();
   $("#averageTokens").textContent = compact.format(average);
-  $("#sessionSummary").textContent = `${sessions.length} real sessions loaded`;
+  $("#sessionSummary").textContent = `${sessions.length} sessions · ${state.searchQuery ? `search: "${escapeHtml(state.searchQuery)}"` : "no filter"}`;
   renderMiniBars(sessions);
   renderChart(sessions);
   renderTable(sessions);
   renderInsights(sessions, input, cachedInput, output, cost);
+  renderAlerts(sessions, cost);
 }
 
 function renderAccountUsage() {
@@ -131,12 +224,15 @@ function renderLimit(kind, limit) {
     $(`#${prefix}Reset`).textContent = "Not provided";
     return;
   }
-  const percent = Math.min(Number(limit.used_percent) || 0, 100);
+  const usedPercent = Math.min(Math.max(Number(limit.used_percent) || 0, 0), 100);
+  const remainingPercent = Number.isFinite(Number(limit.remaining_percent))
+    ? Math.min(Math.max(Number(limit.remaining_percent), 0), 100)
+    : 100 - usedPercent;
   const minutes = Number(limit.window_minutes) || 0;
   const reset = limit.resets_at ? new Date(limit.resets_at * 1000) : null;
-  $(`#${prefix}Percent`).textContent = `${Math.round(percent)}%`;
-  $(`#${prefix}Ring`).style.setProperty("--progress", `${percent * 3.6}deg`);
-  $(`#${prefix}Detail`).textContent = `${formatWindow(minutes)} window`;
+  $(`#${prefix}Percent`).textContent = `${Math.round(remainingPercent)}%`;
+  $(`#${prefix}Ring`).style.setProperty("--progress", `${remainingPercent * 3.6}deg`);
+  $(`#${prefix}Detail`).textContent = `${Math.round(usedPercent)}% used · ${formatWindow(minutes)} window`;
   $(`#${prefix}Reset`).textContent = reset
     ? `${reset.toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })} reset`
     : "Reset unknown";
@@ -160,6 +256,16 @@ function renderMiniBars(sessions) {
 
 function renderChart(sessions) {
   const chart = $("#usageChart");
+  const yAxis = $("#yAxis");
+
+  if (state.chartGranularity === "hour" && state.period === "today") {
+    renderHourlyChart(sessions, chart, yAxis);
+  } else {
+    renderDailyChart(sessions, chart, yAxis);
+  }
+}
+
+function renderDailyChart(sessions, chart, yAxis) {
   const byDay = new Map();
   for (const item of sessions) {
     const day = item.date || String(item.updatedAt).slice(0, 10);
@@ -170,8 +276,7 @@ function renderChart(sessions) {
   }
   const ordered = [...byDay.values()].sort((a, b) => a.date.localeCompare(b.date)).slice(-10);
   const max = Math.max(...ordered.map((item) => item.input + item.output), 1);
-  $("#yAxis").innerHTML = [1, .75, .5, .25, 0].map((step) => `<span>${compact.format(Math.round(max * step))}</span>`).join("");
-
+  yAxis.innerHTML = [1, .75, .5, .25, 0].map((step) => `<span>${compact.format(Math.round(max * step))}</span>`).join("");
   chart.innerHTML = ordered.length
     ? ordered.map((item) => {
         const totalHeight = Math.max(6, ((item.input + item.output) / max) * 88);
@@ -188,11 +293,43 @@ function renderChart(sessions) {
     : "<p class='muted'>No records in current filter</p>";
 }
 
+function renderHourlyChart(sessions, chart, yAxis) {
+  const byHour = new Map();
+  for (let h = 0; h < 24; h++) byHour.set(h, { hour: h, input: 0, output: 0 });
+  for (const item of sessions) {
+    const ts = new Date(item.startedAt || item.updatedAt);
+    if (isNaN(ts.getTime())) continue;
+    const h = ts.getHours();
+    const bucket = byHour.get(h);
+    if (bucket) {
+      bucket.input += item.input;
+      bucket.output += item.output;
+    }
+  }
+  const ordered = [...byHour.values()];
+  const max = Math.max(...ordered.map((item) => item.input + item.output), 1);
+  yAxis.innerHTML = [1, .75, .5, .25, 0].map((step) => `<span>${compact.format(Math.round(max * step))}</span>`).join("");
+  chart.innerHTML = ordered.map((item) => {
+    const total = item.input + item.output;
+    const totalHeight = total > 0 ? Math.max(6, (total / max) * 88) : 0;
+    const inputShare = total > 0 ? (item.input / total) * 100 : 0;
+    return `
+      <div class="chart-column" title="${item.hour}:00 — ${integer.format(total)} tokens">
+        <div class="bar-stack" style="height:${totalHeight}%">
+          <span class="bar-output" style="height:${100 - inputShare}%"></span>
+          <span class="bar-input" style="height:${inputShare}%"></span>
+        </div>
+        <label>${String(item.hour).padStart(2, "0")}</label>
+      </div>`;
+  }).join("");
+}
+
 function renderTable(sessions) {
-  $("#sessionTable").innerHTML = sessions.length
-    ? sessions.slice(0, 25).map((item) => `
+  const rows = sessions.slice(0, 50);
+  $("#sessionTable").innerHTML = rows.length
+    ? rows.map((item, idx) => `
       <tr>
-        <td class="session-name" title="${escapeHtml(item.name)}">${escapeHtml(shorten(item.name, 32))}</td>
+        <td class="session-name" title="${escapeHtml(item.name)}"><span class="session-name-text">${escapeHtml(shorten(item.name, 32))}</span><button class="copy-btn" data-idx="${idx}" title="Copy token details">📋</button></td>
         <td>${item.date}</td>
         <td><span class="model-pill">${escapeHtml(item.model)}</span></td>
         <td title="Cached input ${integer.format(item.cachedInput || 0)}">${integer.format(item.input)}</td>
@@ -201,6 +338,21 @@ function renderTable(sessions) {
         <td title="${costTitle(item)}">${item.costBreakdown?.estimated ? money.format(item.costUsd) : "Unpriced"}</td>
       </tr>`).join("")
     : `<tr><td colspan="7" class="muted">No Codex sessions in current filter.</td></tr>`;
+
+  // attach copy handlers
+  $$(".copy-btn").forEach(btn => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const i = Number(btn.dataset.idx);
+      const item = rows[i];
+      if (!item) return;
+      const text = `Session: ${item.name}\nDate: ${item.date}\nModel: ${item.model}\nInput: ${item.input}\nCached Input: ${item.cachedInput}\nOutput: ${item.output}\nReasoning Output: ${item.reasoningOutput}\nTotal: ${item.total}\nCost: ${item.costBreakdown?.estimated ? money.format(item.costUsd) : 'Unpriced'}`;
+      navigator.clipboard.writeText(text).then(() => {
+        btn.textContent = "✓";
+        setTimeout(() => { btn.textContent = "📋"; }, 1200);
+      });
+    };
+  });
 }
 
 function costTitle(item) {
@@ -228,6 +380,56 @@ function renderInsights(sessions, input, cachedInput, output, cost) {
   $("#insightText").textContent = insight;
 }
 
+function renderAlerts(sessions, cost) {
+  const limits = [state.rateLimits?.primary, state.rateLimits?.secondary].filter(Boolean);
+  const lowLimit = limits.find((limit) => Number(limit.remaining_percent) < Number(state.alerts.remainingPercent || 10));
+  const dailyThreshold = Number(state.alerts.dailyCostUsd || 0);
+  const message = lowLimit
+    ? `Rate limit is low: ${Math.round(Number(lowLimit.remaining_percent))}% remaining.`
+    : dailyThreshold > 0 && cost >= dailyThreshold
+      ? `Daily API-equivalent cost reached ${money.format(cost)}.`
+      : "";
+  const banner = $("#alertBanner");
+  if (!banner) return;
+  banner.hidden = !message;
+  $("#alertMsg").textContent = message;
+  if (!message || !("Notification" in window) || Notification.permission !== "granted") return;
+  const signature = `${message}:${new Date().toISOString().slice(0, 10)}`;
+  if (localStorage.getItem(NOTIFICATION_KEY) === signature) return;
+  new Notification("Codex Token Lens", { body: message });
+  localStorage.setItem(NOTIFICATION_KEY, signature);
+}
+
+async function requestNotifications() {
+  if (!("Notification" in window) || Notification.permission !== "default") return;
+  try { await Notification.requestPermission(); } catch { /* Browser may deny notification prompts. */ }
+}
+
+async function updatePricing() {
+  const button = $("#updatePricingButton");
+  const status = $("#pricingStatus");
+  button.disabled = true;
+  button.classList.add("loading");
+  status.textContent = "Fetching official pricing page…";
+  try {
+    const token = sessionStorage.getItem(API_TOKEN_KEY);
+    const response = await fetch("/api/pricing/update", {
+      method: "POST",
+      headers: token ? { "x-token-lens-token": token } : {}
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    const count = data.pricing?.models?.length || 0;
+    status.textContent = `Updated ${count} model prices from the official page at ${new Date(data.pricing.updatedAt).toLocaleTimeString("zh-CN")}.`;
+    await loadRealUsage();
+  } catch (error) {
+    status.textContent = `Price update failed: ${error.message}`;
+  } finally {
+    button.disabled = false;
+    button.classList.remove("loading");
+  }
+}
+
 function exportSessions(format) {
   const sessions = filteredSessions();
   const filename = `codex-token-lens-${new Date().toISOString().slice(0, 10)}.${format}`;
@@ -245,7 +447,8 @@ function currentFilters() {
     period: state.period,
     model: state.modelFilter,
     dateFrom: state.dateFrom,
-    dateTo: state.dateTo
+    dateTo: state.dateTo,
+    searchQuery: state.searchQuery
   };
 }
 
@@ -287,10 +490,16 @@ function setConnectionStatus(kind, message) {
 async function loadRealUsage() {
   if (state.loading) return;
   state.loading = true;
+  state.error = null;
   $("#refreshButton").classList.add("loading");
+  $("#errorBanner").style.display = "none";
   setConnectionStatus("loading", "Reading Codex");
   try {
-    const response = await fetch("/api/usage", { cache: "no-store" });
+    const token = sessionStorage.getItem(API_TOKEN_KEY);
+    const response = await fetch("/api/usage", {
+      cache: "no-store",
+      headers: token ? { "x-token-lens-token": token } : {}
+    });
     const data = await response.json();
     if (!response.ok) throw new Error(data.detail || data.error || `HTTP ${response.status}`);
     state.sessions = data.sessions || [];
@@ -300,6 +509,7 @@ async function loadRealUsage() {
     state.costSummary = data.costSummary;
     state.pricing = data.pricing;
     state.source = data.source;
+    state.alerts = data.alerts || state.alerts;
     $("#lastUpdated").textContent = `${new Date(data.scannedAt).toLocaleTimeString("zh-CN")} synced / ${data.scanDurationMs}ms`;
     $("#sourcePath").textContent = data.source;
     if (data.available) setConnectionStatus("ready", `Connected / ${data.sessionCount} sessions`);
@@ -309,9 +519,12 @@ async function loadRealUsage() {
     }
     render();
   } catch (error) {
+    state.error = error.message;
     setConnectionStatus("error", "Connection failed");
     $("#lastUpdated").textContent = error.message;
-    $("#sessionTable").innerHTML = `<tr><td colspan="7" class="muted">Start the local server with start.cmd or npm start. Opening index.html directly cannot read local Codex data.</td></tr>`;
+    $("#errorBanner").style.display = "flex";
+    $("#errorBanner").querySelector("#errorMsg").textContent = error.message;
+    $("#sessionTable").innerHTML = `<tr><td colspan="7" class="muted">Connection failed. Click Retry to try again.</td></tr>`;
   } finally {
     state.loading = false;
     $("#refreshButton").classList.remove("loading");
@@ -320,7 +533,7 @@ async function loadRealUsage() {
 
 $$('.period-switch button').forEach((button) => {
   button.addEventListener("click", () => {
-    $$(".period-switch button").forEach((item) => item.classList.remove("active"));
+    $$('.period-switch button').forEach((item) => item.classList.remove("active"));
     button.classList.add("active");
     state.period = button.dataset.period;
     state.dateFrom = "";
@@ -330,13 +543,15 @@ $$('.period-switch button').forEach((button) => {
     render();
   });
 });
+
 $("#modelFilter").addEventListener("change", (event) => {
   state.modelFilter = event.target.value;
   render();
 });
+
 function activateCustomDateRange() {
   state.period = "all";
-  $$(".period-switch button").forEach((item) => item.classList.remove("active"));
+  $$('.period-switch button').forEach((item) => item.classList.remove("active"));
 }
 
 $("#dateFrom").addEventListener("change", (event) => {
@@ -349,20 +564,43 @@ $("#dateTo").addEventListener("change", (event) => {
   activateCustomDateRange();
   render();
 });
+
+$("#searchInput").addEventListener("input", (event) => {
+  state.searchQuery = event.target.value.trim();
+  render();
+});
+
 $("#clearFilters").addEventListener("click", () => {
   state.period = "today";
   state.modelFilter = "all";
   state.dateFrom = "";
   state.dateTo = "";
+  state.searchQuery = "";
   $("#modelFilter").value = "all";
   $("#dateFrom").value = "";
   $("#dateTo").value = "";
-  $$(".period-switch button").forEach((item) => item.classList.toggle("active", item.dataset.period === "today"));
+  $("#searchInput").value = "";
+  $$('.period-switch button').forEach((item) => item.classList.toggle("active", item.dataset.period === "today"));
   render();
 });
+
+// Chart granularity toggle (hourly only for today)
+$$(".granularity-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    $$(".granularity-btn").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    state.chartGranularity = btn.dataset.granularity;
+    render();
+  });
+});
+
 $("#exportJson").addEventListener("click", () => exportSessions("json"));
 $("#exportCsv").addEventListener("click", () => exportSessions("csv"));
 $("#refreshButton").addEventListener("click", loadRealUsage);
+$("#retryButton").addEventListener("click", loadRealUsage);
+$("#enableNotifications").addEventListener("click", requestNotifications);
+$("#updatePricingButton").addEventListener("click", updatePricing);
+
 $("#themeToggle").addEventListener("click", () => {
   document.body.classList.toggle("dark");
   localStorage.setItem(THEME_KEY, document.body.classList.contains("dark") ? "dark" : "light");

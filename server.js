@@ -20,17 +20,16 @@ const INDEX_PATH = path.join(CODEX_DIR, "session_index.jsonl");
 const CACHE_DIR = process.env.TOKEN_LENS_CACHE_DIR || path.join(os.tmpdir(), "codex-token-lens");
 const CACHE_ID = crypto.createHash("sha256").update(CODEX_DIR).digest("hex").slice(0, 12);
 const CACHE_PATH = path.join(CACHE_DIR, `usage-${CACHE_ID}.json`);
+const CACHE_TTL_MS = parseDurationMs(process.env.TOKEN_LENS_CACHE_TTL || "15m", 15 * 60 * 1000);
+const SCAN_CONCURRENCY = parsePositiveInt(process.env.TOKEN_LENS_SCAN_CONCURRENCY, 3, 32);
 const PRICING_SOURCE = "https://platform.openai.com/pricing";
-const PRICING_FILE = process.env.TOKEN_LENS_PRICING_FILE || "";
+const BUNDLED_PRICING_FILE = path.join(APP_DIR, "pricing.json");
+const PRICING_FILE = process.env.TOKEN_LENS_PRICING_FILE || BUNDLED_PRICING_FILE;
 const PRICING_JSON = process.env.TOKEN_LENS_PRICES_JSON || "";
+const API_TOKEN = process.env.TOKEN_LENS_API_TOKEN || "";
 const OFFICIAL_USAGE_MODE = process.env.TOKEN_LENS_OFFICIAL_USAGE || "auto";
 const OFFICIAL_TIMEOUT_MS = Number(process.env.TOKEN_LENS_OFFICIAL_TIMEOUT_MS || 5000);
-const DEFAULT_PRICES_PER_MILLION = [
-  { pattern: "gpt[-\\s_]?5\\.6[-\\s_]?sol", label: "GPT-5.6 Sol", input: 5.00, cachedInput: 0.50, cacheWriteInput: 6.25, output: 30.00 },
-  { pattern: "gpt[-\\s_]?5\\.6[-\\s_]?terra", label: "GPT-5.6 Terra", input: 2.50, cachedInput: 0.25, cacheWriteInput: 3.125, output: 15.00 },
-  { pattern: "gpt[-\\s_]?5\\.6[-\\s_]?luna", label: "GPT-5.6 Luna", input: 1.00, cachedInput: 0.10, cacheWriteInput: 1.25, output: 6.00 }
-];
-const PRICES_PER_MILLION = loadPricing();
+let PRICES_PER_MILLION = loadPricing();
 const MIME = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
@@ -44,12 +43,25 @@ let officialUsagePromise = null;
 let officialUsageCache = { at: 0, value: null };
 let cache = loadCache();
 
+function parsePositiveInt(value, fallback, maximum) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? Math.min(parsed, maximum) : fallback;
+}
+
+function parseDurationMs(value, fallback) {
+  if (value == null || value === "") return fallback;
+  const match = String(value).trim().match(/^(\d+(?:\.\d+)?)\s*(ms|s|m|h|d)?$/i);
+  if (!match) return fallback;
+  const units = { ms: 1, s: 1000, m: 60000, h: 3600000, d: 86400000 };
+  return Math.max(0, Number(match[1]) * (units[(match[2] || "ms").toLowerCase()] || 1));
+}
+
 function loadCache() {
   try {
     const parsed = JSON.parse(fs.readFileSync(CACHE_PATH, "utf8"));
-    return parsed && parsed.version === 1 ? parsed : { version: 1, files: {} };
+    return parsed && parsed.version === 1 ? parsed : { version: 1, files: {}, fullScanAt: 0 };
   } catch {
-    return { version: 1, files: {} };
+    return { version: 1, files: {}, fullScanAt: 0 };
   }
 }
 
@@ -65,19 +77,26 @@ function saveCache() {
 }
 
 function loadPricing() {
-  try {
-    const source = PRICING_JSON || (PRICING_FILE ? fs.readFileSync(PRICING_FILE, "utf8") : "");
-    if (!source) return compilePricing(DEFAULT_PRICES_PER_MILLION);
-    const parsed = JSON.parse(source);
-    const models = Array.isArray(parsed) ? parsed : parsed.models;
-    if (!Array.isArray(models)) throw new Error("pricing data must be an array or { models: [] }");
-    const compiled = compilePricing(models);
-    if (!compiled.length) throw new Error("pricing data did not contain any valid model rows");
-    return compiled;
-  } catch (error) {
-    console.warn(`Invalid custom pricing configuration; falling back to defaults: ${error.message}`);
-    return compilePricing(DEFAULT_PRICES_PER_MILLION);
+  const candidates = PRICING_JSON
+    ? [{ label: "TOKEN_LENS_PRICES_JSON", source: PRICING_JSON }]
+    : [
+        { label: PRICING_FILE, file: PRICING_FILE },
+        ...(PRICING_FILE !== BUNDLED_PRICING_FILE ? [{ label: BUNDLED_PRICING_FILE, file: BUNDLED_PRICING_FILE }] : [])
+      ];
+  for (const candidate of candidates) {
+    try {
+      const source = candidate.source ?? fs.readFileSync(candidate.file, "utf8");
+      const parsed = JSON.parse(source);
+      const models = Array.isArray(parsed) ? parsed : parsed.models;
+      if (!Array.isArray(models)) throw new Error("pricing data must be an array or { models: [] }");
+      const compiled = compilePricing(models);
+      if (!compiled.length) throw new Error("pricing data did not contain any valid model rows");
+      return compiled;
+    } catch (error) {
+      console.warn(`Invalid pricing configuration (${candidate.label}): ${error.message}`);
+    }
   }
+  return [];
 }
 
 function compilePricing(models) {
@@ -95,6 +114,75 @@ function compilePricing(models) {
       };
     })
     .filter((item) => item.label && Number.isFinite(item.input) && Number.isFinite(item.cachedInput) && Number.isFinite(item.cacheWriteInput) && Number.isFinite(item.output));
+}
+
+function normalizePriceNumber(value) {
+  if (typeof value === "number") return value;
+  const match = String(value ?? "").replace(/[$,]/g, "").match(/\d+(?:\.\d+)?/);
+  return match ? Number(match[0]) : NaN;
+}
+
+function extractPricingFromHtml(html) {
+  const found = new Map();
+  const add = (item) => {
+    const label = String(item.label || item.model || item.name || "").trim();
+    if (!label || !/(gpt|o[0-9]|o-mini|codex|embedding|claude|gemini)/i.test(label)) return;
+    const input = normalizePriceNumber(item.input ?? item.input_price ?? item.inputPrice ?? item.prompt);
+    const cachedInput = normalizePriceNumber(item.cachedInput ?? item.cached_input ?? item.cache_read ?? item.cached);
+    const cacheWriteInput = normalizePriceNumber(item.cacheWriteInput ?? item.cache_write_input ?? item.cache_creation ?? item.cacheWrite);
+    const output = normalizePriceNumber(item.output ?? item.output_price ?? item.outputPrice ?? item.completion);
+    if (![input, output].every(Number.isFinite)) return;
+    const pattern = label.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    found.set(label, {
+      pattern,
+      label,
+      input,
+      cachedInput: Number.isFinite(cachedInput) ? cachedInput : input,
+      cacheWriteInput: Number.isFinite(cacheWriteInput) ? cacheWriteInput : (Number.isFinite(cachedInput) ? cachedInput : input),
+      output
+    });
+  };
+  const visit = (value) => {
+    if (!value || typeof value !== "object") return;
+    if (Array.isArray(value)) return value.forEach(visit);
+    add(value);
+    Object.values(value).forEach(visit);
+  };
+  for (const match of html.matchAll(/<script[^>]*type=["']application\/json["'][^>]*>([\s\S]*?)<\/script>/gi)) {
+    try { visit(JSON.parse(match[1])); } catch { /* Not all embedded scripts are JSON. */ }
+  }
+  const rows = html.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi);
+  for (const row of rows) {
+    const cells = [...row[1].matchAll(/<(?:td|th)[^>]*>([\s\S]*?)<\/(?:td|th)>/gi)]
+      .map((cell) => cell[1].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim());
+    if (cells.length < 3) continue;
+    const numbers = cells.slice(1).map(normalizePriceNumber).filter(Number.isFinite);
+    if (numbers.length >= 2) add({ label: cells[0], input: numbers[0], cachedInput: numbers[1], cacheWriteInput: numbers[1], output: numbers[numbers.length - 1] });
+  }
+  return [...found.values()];
+}
+
+async function fetchPricingPage() {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.max(1000, OFFICIAL_TIMEOUT_MS));
+  try {
+    const response = await fetch(PRICING_SOURCE, {
+      headers: { "user-agent": "Codex-Token-Lens/1.0", accept: "text/html,application/xhtml+xml" },
+      signal: controller.signal
+    });
+    if (!response.ok) throw new Error(`Pricing page returned HTTP ${response.status}`);
+    const html = await response.text();
+    const models = extractPricingFromHtml(html);
+    if (!models.length) throw new Error("No model prices found; the pricing page may require JavaScript or changed format");
+    const payload = { source: PRICING_SOURCE, updatedAt: new Date().toISOString(), unit: "USD per 1M tokens", models };
+    const temporary = `${BUNDLED_PRICING_FILE}.tmp`;
+    fs.writeFileSync(temporary, JSON.stringify(payload, null, 2) + "\n", "utf8");
+    fs.renameSync(temporary, BUNDLED_PRICING_FILE);
+    PRICES_PER_MILLION = compilePricing(models);
+    return payload;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function listJsonlFiles(root) {
@@ -138,7 +226,8 @@ async function parseSession(filePath, stat) {
     cwd: "",
     usage: null,
     rateLimits: null,
-    usageTimestamp: null
+    usageTimestamp: null,
+    parseErrors: 0
   };
 
   const stream = fs.createReadStream(filePath, { encoding: "utf8" });
@@ -164,8 +253,9 @@ async function parseSession(filePath, stat) {
         }
         if (event.payload.rate_limits) session.rateLimits = event.payload.rate_limits;
       }
-    } catch {
-      // Active JSONL files can briefly end with an incomplete line.
+    } catch (error) {
+      session.parseErrors += 1;
+      if (session.parseErrors <= 3) console.warn(`Unable to parse JSONL event in ${filePath}: ${error.message}`);
     }
   }
 
@@ -191,7 +281,10 @@ async function scanUsage() {
   const files = listJsonlFiles(SESSIONS_DIR);
   const activePaths = new Set(files);
 
-  const sessions = await mapWithConcurrency(files, 3, async (filePath) => {
+  const lastFullScan = Number(cache.fullScanAt || cache.updatedAt || 0);
+  const cacheExpired = CACHE_TTL_MS === 0 || !lastFullScan || Date.now() - lastFullScan > CACHE_TTL_MS;
+  if (cacheExpired) cache.files = {};
+  const sessions = await mapWithConcurrency(files, SCAN_CONCURRENCY, async (filePath) => {
     const stat = fs.statSync(filePath);
     const signature = `${stat.size}:${stat.mtimeMs}`;
     const cached = cache.files[filePath];
@@ -204,6 +297,7 @@ async function scanUsage() {
   for (const filePath of Object.keys(cache.files)) {
     if (!activePaths.has(filePath)) delete cache.files[filePath];
   }
+  if (cacheExpired) cache.fullScanAt = Date.now();
   saveCache();
 
   const normalized = sessions
@@ -231,7 +325,8 @@ async function scanUsage() {
         costUsd: costBreakdown.totalUsd,
         costBreakdown,
         rateLimits: item.rateLimits,
-        usageTimestamp: item.usageTimestamp
+        usageTimestamp: item.usageTimestamp,
+        parseErrors: item.parseErrors || 0
       };
     })
     .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
@@ -254,12 +349,23 @@ async function scanUsage() {
     },
     costSummary: summarizeCosts(normalized),
     sessions: normalized,
-    rateLimits: official?.rateLimits || latestLimit,
+    rateLimits: addRemainingPercent(official?.rateLimits || latestLimit),
     rateLimitsSource: official?.rateLimits ? official.source : (latestLimit ? "local-session-snapshot" : "unavailable"),
     accountUsage: official?.usage || null,
+    rateLimitResetCredits: official?.rateLimitResetCredits || null,
     officialQuery: official
       ? { attempted: true, available: Boolean(official.rateLimits), error: official.error }
-      : { attempted: false, available: false, error: null }
+      : { attempted: false, available: false, error: null },
+    diagnostics: {
+      cacheTtlMs: CACHE_TTL_MS,
+      cacheExpired,
+      scanConcurrency: SCAN_CONCURRENCY,
+      parseErrorCount: normalized.reduce((total, item) => total + item.parseErrors, 0)
+    },
+    alerts: {
+      dailyCostUsd: Number(process.env.TOKEN_LENS_DAILY_COST_ALERT_USD || 0) || null,
+      remainingPercent: Number(process.env.TOKEN_LENS_RATE_LIMIT_ALERT_PERCENT || 10) || 10
+    }
   };
 }
 
@@ -315,11 +421,23 @@ function getUsage() {
 
 function normalizeOfficialWindow(window) {
   if (!window) return null;
+  const usedPercent = Math.min(100, Math.max(0, Number(window.usedPercent) || 0));
   return {
-    used_percent: Number(window.usedPercent) || 0,
+    used_percent: usedPercent,
+    remaining_percent: 100 - usedPercent,
     window_minutes: Number(window.windowDurationMins) || 0,
     resets_at: window.resetsAt == null ? null : Number(window.resetsAt)
   };
+}
+
+function addRemainingPercent(snapshot) {
+  if (!snapshot) return null;
+  const normalize = (window) => {
+    if (!window) return null;
+    const used = Math.min(100, Math.max(0, Number(window.used_percent) || 0));
+    return { ...window, used_percent: used, remaining_percent: 100 - used };
+  };
+  return { ...snapshot, primary: normalize(snapshot.primary), secondary: normalize(snapshot.secondary) };
 }
 
 function normalizeOfficialRateLimits(result) {
@@ -368,9 +486,10 @@ function queryOfficialUsage() {
       USERPROFILE: os.homedir()
     };
     const child = process.platform === "win32" && /\.(?:cmd|bat)$/i.test(command)
-      ? spawn("cmd.exe", ["/d", "/s", "/c", `${command} ${args.join(" ")}`], { env: childEnv, stdio: ["pipe", "pipe", "ignore"], windowsHide: true })
-      : spawn(command, args, { env: childEnv, stdio: ["pipe", "pipe", "ignore"] });
+      ? spawn("cmd.exe", ["/d", "/s", "/c", `${command} ${args.join(" ")}`], { env: childEnv, stdio: ["pipe", "pipe", "pipe"], windowsHide: true })
+      : spawn(command, args, { env: childEnv, stdio: ["pipe", "pipe", "pipe"] });
     let buffer = "";
+    let stderr = "";
     let settled = false;
     const pending = new Set();
     const responses = new Map();
@@ -384,12 +503,18 @@ function queryOfficialUsage() {
       officialUsagePromise = null;
       resolve(value);
     };
-    const unavailable = (error) => ({ source: "codex-app-server", authoritative: false, rateLimits: null, usage: null, error });
+    const unavailable = (error) => ({ source: "codex-app-server", authoritative: false, rateLimits: null, usage: null, rateLimitResetCredits: null, error });
     const timer = setTimeout(() => finish(unavailable("Official Codex app-server query timed out")), OFFICIAL_TIMEOUT_MS);
     const send = (message) => child.stdin.write(`${JSON.stringify(message)}\n`);
     const request = (id, method, params = null) => send({ id, method, params });
     child.on("error", (error) => finish(unavailable(error.message)));
-    child.on("exit", () => finish(unavailable("Official Codex app-server exited before responding")));
+    child.stderr.on("data", (chunk) => {
+      stderr = `${stderr}${chunk.toString()}`.slice(-2000);
+    });
+    child.on("exit", (code) => {
+      const detail = stderr.trim().split(/\r?\n/).filter(Boolean).slice(-2).join(" / ");
+      finish(unavailable(detail ? `Official Codex app-server exited (${code ?? "signal"}): ${detail}` : "Official Codex app-server exited before responding"));
+    });
     child.stdout.on("data", (chunk) => {
       buffer += chunk.toString();
       let newline;
@@ -422,6 +547,7 @@ function queryOfficialUsage() {
             authoritative: Boolean(rateLimits),
             rateLimits,
             usage: usage || null,
+            rateLimitResetCredits: responses.get(2)?.rateLimitResetCredits || null,
             error: rateLimits ? null : "Official rate-limit snapshot unavailable"
           });
         }
@@ -444,6 +570,14 @@ function sendJson(response, status, value) {
     ...securityHeaders()
   });
   response.end(JSON.stringify(value));
+}
+
+function isAuthorized(request, requestUrl) {
+  if (!API_TOKEN) return true;
+  const supplied = request.headers["x-token-lens-token"] || requestUrl.searchParams.get("token") || "";
+  const expected = Buffer.from(API_TOKEN);
+  const actual = Buffer.from(String(supplied));
+  return expected.length === actual.length && crypto.timingSafeEqual(expected, actual);
 }
 
 function serveStatic(request, response) {
@@ -483,12 +617,24 @@ function securityHeaders() {
 }
 
 const server = http.createServer(async (request, response) => {
+  const requestUrl = new URL(request.url, `http://${HOST}`);
+  const requestPath = requestUrl.pathname;
+  if (request.method === "POST" && requestPath === "/api/pricing/update") {
+    if (!isAuthorized(request, requestUrl)) return sendJson(response, 401, { error: "Invalid or missing Token Lens API token" });
+    try {
+      return sendJson(response, 200, { ok: true, pricing: await fetchPricingPage() });
+    } catch (error) {
+      try { fs.rmSync(`${BUNDLED_PRICING_FILE}.tmp`, { force: true }); } catch { /* Keep the last valid pricing file. */ }
+      console.warn(`Unable to update pricing: ${error.message}`);
+      return sendJson(response, 502, { ok: false, error: `Unable to update pricing: ${error.message}` });
+    }
+  }
   if (request.method !== "GET") {
     response.writeHead(405);
     return response.end("Method not allowed");
   }
-  const requestPath = new URL(request.url, `http://${HOST}`).pathname;
   if (requestPath === "/api/usage") {
+    if (!isAuthorized(request, requestUrl)) return sendJson(response, 401, { error: "Invalid or missing Token Lens API token" });
     try {
       return sendJson(response, 200, await getUsage());
     } catch (error) {
