@@ -11,8 +11,8 @@
   function render({ body, sessions, integer, money, escapeHtml, shorten, clipboard }) {
     const rows = sessions.slice(0, 50);
     body.innerHTML = rows.length
-      ? rows.map((item, index) => `<tr><td class="session-name" title="${escapeHtml(item.name)}"><span class="session-name-text">${escapeHtml(shorten(item.name, 32))}</span><button class="copy-btn" data-idx="${index}" title="Copy token details">📋</button></td><td>${data.localDateFromSession(item)}</td><td><span class="model-pill">${escapeHtml(item.model)}</span></td><td title="Cached input ${integer.format(item.cachedInput || 0)}">${integer.format(item.input)}</td><td title="Reasoning output ${integer.format(item.reasoningOutput || 0)}">${integer.format(item.output)}</td><td><strong>${integer.format(item.total || item.input + item.output)}</strong></td><td title="${costTitle(item, money)}">${item.costBreakdown?.estimated ? money.format(item.costUsd) : "Unpriced"}</td></tr>`).join("")
-      : emptyRow(7, "No Codex sessions in current filter.");
+      ? rows.map((item, index) => `<tr><td class="session-name" title="${escapeHtml(item.name)}"><span class="session-name-text">${escapeHtml(shorten(item.name, 32))}</span><button class="copy-btn" data-idx="${index}" title="Copy token details">📋</button></td><td>${data.localDateFromSession(item)}</td><td><span class="model-pill">${escapeHtml(item.model)}</span></td><td title="Cached input ${integer.format(item.cachedInput || 0)}">${integer.format(item.input)}</td><td title="Reasoning output ${integer.format(item.reasoningOutput || 0)}">${integer.format(item.output)}</td><td><strong>${integer.format(item.total || item.input + item.output)}</strong></td><td title="${costTitle(item, money)}">${item.costBreakdown?.estimated ? money.format(item.costUsd) : "Unpriced"}</td><td><button class="export-btn" data-session-id="${escapeHtml(item.id)}" data-session-name="${escapeHtml(item.name)}" title="Export to Markdown">📥</button></td></tr>`).join("")
+      : emptyRow(8, "No Codex sessions in current filter.");
 
     for (const button of body.querySelectorAll(".copy-btn")) {
       button.onclick = async (event) => {

@@ -16,6 +16,7 @@
 - 按内置或自定义价格表估算 API 等价美元成本
 - 默认价格表位于项目目录的 `pricing.json`；界面右上角 `Update prices` 会按需抓取官方 pricing 页面，解析成功后原子写回这个文件。不会自动定时联网。
 - 导出当前筛选结果为 CSV 或 JSON
+- 导出单个会话的完整对话记录为 Markdown 文件（包含消息、工具调用、输出等完整事件）
 - 自动刷新，默认每 30 秒同步一次
 - 支持会话名称/模型搜索、Today 的小时粒度、与上一周期的 token/成本对比和单会话明细复制
 - 可选本地费用/额度告警和浏览器通知
@@ -83,6 +84,31 @@ GET http://127.0.0.1:4173/api/usage
 ```http
 POST http://127.0.0.1:4173/api/pricing/update
 ```
+
+```http
+GET http://127.0.0.1:4173/api/sessions/{sessionId}/full
+```
+
+返回指定会话 ID 的完整事件日志。会话 ID 可从 `/api/usage` 的 `sessions[].id` 字段获取。
+
+响应结构：
+
+```json
+{
+  "sessionId": "session-abc123",
+  "title": "会话标题",
+  "model": "gpt-5.6-luna",
+  "events": [
+    { "type": "session_meta", "payload": {...}, "timestamp": "..." },
+    { "type": "message", "payload": { "role": "user", "content": "..." }, "timestamp": "..." },
+    { "type": "message", "payload": { "role": "assistant", "content": "..." }, "timestamp": "..." },
+    { "type": "tool_call", "payload": { "tool_name": "...", "tool_input": {...} }, "timestamp": "..." },
+    { "type": "tool_result", "payload": { "tool_output": "..." }, "timestamp": "..." }
+  ]
+}
+```
+
+### 更新接口
 
 更新接口抓取官方 pricing 页面、校验模型价格，并写回项目目录的 `pricing.json`。如果页面启用 Cloudflare、需要 JavaScript 或结构变化，旧价格会保留并返回失败原因。
 
@@ -168,7 +194,28 @@ npm.cmd start
 
 ## 导出
 
+### 统计数据导出
+
 页面里的 `Export CSV` 和 `Export JSON` 会导出当前筛选结果。导出数据包含会话标题、日期、模型、Token 明细、美元估算和是否成功匹配价格。
+
+### 完整对话导出
+
+表格中每行会话末尾的 📥 按钮可以导出该会话的完整聊天记录。点击后会自动下载一个 Markdown 文件（命名为 `会话名_sessionId_日期.md`），包含：
+
+- 会话元数据（标题、ID、模型、开始时间、总 Token 数）
+- 按时间顺序的完整消息序列
+- 用户消息、助手回复
+- 工具调用及其输入参数
+- 工具执行结果
+- 任何错误或异常
+
+**API 端点**：
+
+```http
+GET http://127.0.0.1:4173/api/sessions/{sessionId}/full
+```
+
+返回完整的事件日志，包括所有 JSONL 事件（消息、工具调用、输出等）。
 
 ## 截图
 
@@ -187,11 +234,23 @@ CI 会在 Node.js 18、20、22、24 上运行语法检查和测试。
 
 服务只监听 `127.0.0.1`，只读取本地 Codex 会话统计字段，不上传第三方服务，不读取：
 
-- 会话正文
-- 工具输出正文
 - `auth.json`
 - API key
 - GitHub 凭据
+
+### 完整对话导出
+
+完整对话导出功能（`/api/sessions/{sessionId}/full`）会读取会话的完整事件数据，包括：
+
+- 聊天消息内容
+- 工具调用及其输入参数
+- 工具执行结果和输出
+
+这些数据完全保存在本地，不会自动上传。用户下载的 Markdown 文件由用户自己管理其安全性。建议：
+
+- 不要将导出的 Markdown 文件上传到公开位置
+- 注意文件中可能包含的敏感信息（API 参数、个人数据等）
+- 使用文件访问权限限制导出文件的访问
 
 ## License
 

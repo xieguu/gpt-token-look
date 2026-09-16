@@ -63,7 +63,7 @@ test("chart groups sessions by local day and table exposes an empty state", () =
   assert.equal(grouped.size, 2);
   const body = { innerHTML: "", querySelectorAll() { return []; } };
   table.render({ body, sessions: [], integer: new Intl.NumberFormat("en"), money: new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }), escapeHtml: String, shorten: String, clipboard: null });
-  assert.match(body.innerHTML, /colspan="7"/);
+  assert.match(body.innerHTML, /colspan="8"/);
   assert.match(body.innerHTML, /No Codex sessions/);
 });
 

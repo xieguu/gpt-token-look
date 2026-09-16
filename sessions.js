@@ -134,7 +134,29 @@ function createSessionsService({ codexDir, cacheDir, cacheTtlMs, scanConcurrency
     };
   }
 
-  return { scan, sessionsDir };
+  async function readSessionFull(sessionId) {
+    const files = listJsonlFiles(sessionsDir);
+    const titles = loadTitles();
+    const sessionFile = files.find((f) => path.basename(f, ".jsonl") === sessionId);
+    if (!sessionFile) return null;
+
+    const events = [];
+    const stream = fs.createReadStream(sessionFile, { encoding: "utf8" });
+    const lines = readline.createInterface({ input: stream, crlfDelay: Infinity });
+    for await (const line of lines) {
+      if (!line.trim()) continue;
+      try { events.push(JSON.parse(line)); }
+      catch (error) { console.warn(`Unable to parse JSONL event in ${sessionFile}: ${error.message}`); }
+    }
+
+    const sessionMeta = events.find((e) => e.type === "session_meta");
+    const title = titles.get(sessionId) || path.basename(sessionMeta?.payload?.cwd || "") || "Untitled session";
+    const model = events.find((e) => e.type === "turn_context")?.payload?.model || "Codex";
+
+    return { sessionId, title, model, events };
+  }
+
+  return { scan, readSessionFull, sessionsDir };
 }
 
 function normalizeSession(item, titles) {

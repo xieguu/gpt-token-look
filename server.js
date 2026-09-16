@@ -120,6 +120,16 @@ const server = http.createServer(async (request, response) => {
     try { return sendJson(response, 200, await getUsage()); }
     catch (error) { return sendJson(response, 500, { error: "Unable to read Codex usage statistics", detail: error.code === "ENOENT" ? `Missing sessions directory: ${sessionsService.sessionsDir}` : error.message }); }
   }
+  const sessionMatch = requestPath.match(/^\/api\/sessions\/([^\/]+)\/full$/);
+  if (sessionMatch) {
+    if (!isAuthorized(request, requestUrl)) return sendJson(response, 401, { error: "Invalid or missing Token Lens API token" });
+    try {
+      const sessionId = decodeURIComponent(sessionMatch[1]);
+      const sessionData = await sessionsService.readSessionFull(sessionId);
+      if (!sessionData) return sendJson(response, 404, { error: "Session not found" });
+      return sendJson(response, 200, sessionData);
+    } catch (error) { return sendJson(response, 500, { error: "Unable to read session", detail: error.message }); }
+  }
   serveStatic(request, response);
 });
 

@@ -152,6 +152,7 @@ function render() {
   TokenLensTable.render({ body: $("#sessionTable"), sessions, integer, money, escapeHtml, shorten, clipboard: navigator.clipboard });
   renderInsights(sessions, input, cachedInput, output, cost);
   TokenLensNotifications.renderAlerts({ banner: $("#alertBanner"), messageNode: $("#alertMsg"), rateLimits: state.rateLimits, alerts: state.alerts, cost, money });
+  setupExportButtons();
 }
 
 function renderAccountUsage() {
@@ -445,6 +446,38 @@ $("#refreshButton").addEventListener("click", loadRealUsage);
 $("#retryButton").addEventListener("click", loadRealUsage);
 $("#enableNotifications").addEventListener("click", requestNotifications);
 $("#updatePricingButton").addEventListener("click", updatePricing);
+
+function setupExportButtons() {
+  $$(".export-btn").forEach((btn) => {
+    btn.onclick = async (event) => {
+      event.stopPropagation();
+      const sessionId = btn.dataset.sessionId;
+      const sessionName = btn.dataset.sessionName;
+      if (!sessionId) return;
+      btn.textContent = "⏳";
+      btn.disabled = true;
+      try {
+        const token = sessionStorage.getItem(API_TOKEN_KEY);
+        const url = `/api/sessions/${encodeURIComponent(sessionId)}/full${token ? `?token=${encodeURIComponent(token)}` : ""}`;
+        const response = await fetch(url);
+        if (!response.ok) throw new Error(`Failed to fetch session: ${response.statusText}`);
+        const sessionData = await response.json();
+        const markdown = TokenLensExport.formatSessionToMarkdown(sessionData);
+        const dateStr = localDateIso();
+        const filename = `${sessionName.replace(/[^a-z0-9]/gi, "_")}_${sessionId}_${dateStr}.md`;
+        download(filename, "text/markdown", markdown);
+        btn.textContent = "✓";
+        setTimeout(() => { btn.textContent = "📥"; }, 1200);
+      } catch (error) {
+        console.error("Export failed:", error);
+        btn.textContent = "✗";
+        setTimeout(() => { btn.textContent = "📥"; }, 1200);
+      } finally {
+        btn.disabled = false;
+      }
+    };
+  });
+}
 
 $("#themeToggle").addEventListener("click", () => {
   document.body.classList.toggle("dark");
