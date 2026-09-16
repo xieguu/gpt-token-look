@@ -7,6 +7,7 @@ const crypto = require("node:crypto");
 const { createSessionsService } = require("./sessions");
 const { createLimitsService, selectRateLimits } = require("./limits");
 const { createPricingService } = require("./pricing");
+const { createGistService } = require("./gist");
 
 const HOST = "127.0.0.1";
 const PORT = process.env.TOKEN_LENS_PORT === undefined ? 4173 : Number(process.env.TOKEN_LENS_PORT);
@@ -26,6 +27,7 @@ const OFFICIAL_TIMEOUT_MS = Number(process.env.TOKEN_LENS_OFFICIAL_TIMEOUT_MS ||
 const sessionsService = createSessionsService({ codexDir: CODEX_DIR, cacheDir: CACHE_DIR, cacheTtlMs: CACHE_TTL_MS, scanConcurrency: SCAN_CONCURRENCY });
 const pricingService = createPricingService({ appDir: APP_DIR, pricingFile: process.env.TOKEN_LENS_PRICING_FILE, pricesJson: process.env.TOKEN_LENS_PRICES_JSON || "", timeoutMs: OFFICIAL_TIMEOUT_MS });
 const limitsService = createLimitsService({ codexDir: CODEX_DIR, mode: process.env.TOKEN_LENS_OFFICIAL_USAGE || "auto", timeoutMs: OFFICIAL_TIMEOUT_MS, command: process.env.TOKEN_LENS_CODEX_COMMAND, extraArgs: resolveCodexExtraArgs() });
+const gistService = createGistService();
 const MIME = { ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".json": "application/json; charset=utf-8", ".png": "image/png", ".svg": "image/svg+xml" };
 let scanPromise = null;
 
@@ -114,7 +116,59 @@ const server = http.createServer(async (request, response) => {
     try { return sendJson(response, 200, { ok: true, pricing: await pricingService.update() }); }
     catch (error) { try { fs.rmSync(path.join(APP_DIR, "pricing.json.tmp"), { force: true }); } catch { /* Keep old prices. */ } console.warn(`Unable to update pricing: ${error.message}`); return sendJson(response, 502, { ok: false, error: `Unable to update pricing: ${error.message}`, pricing: pricingService.getPublicPricing() }); }
   }
+  if (request.method === "POST" && requestPath === "/api/sync/upload-gist") {
+    if (!isAuthorized(request, requestUrl)) return sendJson(response, 401, { error: "Invalid or missing Token Lens API token" });
+    try {
+      let body = "";
+      request.on("data", (chunk) => { body += chunk; });
+      request.on("end", async () => {
+        try {
+          const payload = JSON.parse(body);
+          if (!payload.githubToken) return sendJson(response, 400, { error: "githubToken required" });
+          const usage = await getUsage();
+          const result = await gistService.uploadToGist(usage.sessions, payload.githubToken, { deviceName: payload.deviceName || "Unknown" });
+          return sendJson(response, 200, { ok: true, ...result });
+        } catch (error) { return sendJson(response, 500, { error: "Failed to upload to Gist", detail: error.message }); }
+      });
+    } catch (error) { return sendJson(response, 500, { error: "Request parsing failed", detail: error.message }); }
+  }
+  if (request.method === "POST" && requestPath === "/api/sync/download-gist") {
+    if (!isAuthorized(request, requestUrl)) return sendJson(response, 401, { error: "Invalid or missing Token Lens API token" });
+    try {
+      let body = "";
+      request.on("data", (chunk) => { body += chunk; });
+      request.on("end", async () => {
+        try {
+          const payload = JSON.parse(body);
+          if (!payload.gistId) return sendJson(response, 400, { error: "gistId required" });
+          const result = await gistService.downloadFromGist(payload.gistId, payload.githubToken || "");
+          return sendJson(response, 200, { ok: true, data: result, importedCount: result.sessions?.length || 0 });
+        } catch (error) { return sendJson(response, 500, { error: "Failed to download from Gist", detail: error.message }); }
+      });
+    } catch (error) { return sendJson(response, 500, { error: "Request parsing failed", detail: error.message }); }
+  }
   if (request.method !== "GET") { response.writeHead(405, securityHeaders()); return response.end("Method not allowed"); }
+  if (requestPath === "/api/export/all") {
+    if (!isAuthorized(request, requestUrl)) return sendJson(response, 401, { error: "Invalid or missing Token Lens API token" });
+    try {
+      const usage = await getUsage();
+      const exportData = {
+        version: "1.0",
+        exportedAt: new Date().toISOString(),
+        source: "gpt-token-look",
+        sessionCount: usage.sessions.length,
+        sessions: usage.sessions.map((s) => ({
+          id: s.id,
+          name: s.name,
+          date: s.date,
+          model: s.model,
+          tokens: { input: s.input, cachedInput: s.cachedInput, cacheWriteInput: s.cacheWriteInput, output: s.output, reasoningOutput: s.reasoningOutput, total: s.total },
+          costUsd: s.costUsd
+        }))
+      };
+      return sendJson(response, 200, exportData);
+    } catch (error) { return sendJson(response, 500, { error: "Unable to export sessions", detail: error.message }); }
+  }
   if (requestPath === "/api/usage") {
     if (!isAuthorized(request, requestUrl)) return sendJson(response, 401, { error: "Invalid or missing Token Lens API token" });
     try { return sendJson(response, 200, await getUsage()); }

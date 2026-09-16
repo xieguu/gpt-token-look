@@ -870,3 +870,38 @@ tbody tr:hover .copy-btn { opacity: 1; }
   .table-panel { padding-inline: 14px; }
   .table-scroll { margin-inline: -2px; }
 }
+
+.sync-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 20px;
+  background: var(--paper);
+  border-top: 1px solid var(--border);
+  margin: 8px 0;
+}
+
+.sync-panel h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.sync-panel > .muted {
+  margin: 0;
+  font-size: 12px;
+}
+
+.sync-buttons {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.sync-buttons button {
+  flex: 1;
+  min-width: 120px;
+  padding: 8px 12px;
+  font-size: 13px;
+}

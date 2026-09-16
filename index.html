@@ -17,6 +17,9 @@
       </a>
       <div class="topbar-actions">
         <span class="status" id="sourceStatus"><i></i> Reading Codex</span>
+        <button class="icon-button" id="langToggle" type="button" aria-label="Toggle language" title="中文/English">
+          <span id="langIndicator">EN</span>
+        </button>
         <button class="icon-button" id="themeToggle" type="button" aria-label="Toggle dark mode" title="Toggle theme">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v2m0 14v2M3 12h2m14 0h2M5.64 5.64l1.42 1.42m9.88 9.88 1.42 1.42m0-12.72-1.42 1.42M7.06 16.94l-1.42 1.42"/><circle cx="12" cy="12" r="4"/></svg>
         </button>
@@ -46,6 +49,16 @@
         <label>Start date<input id="dateFrom" type="date"></label>
         <label>End date<input id="dateTo" type="date"></label>
         <button class="secondary-button" id="clearFilters" type="button">Clear</button>
+      </section>
+
+      <section class="sync-panel" aria-label="Gist Sync">
+        <h3>Cross-Device Sync</h3>
+        <p class="muted">Backup to GitHub Gist and restore on other devices</p>
+        <div class="sync-buttons">
+          <button class="primary-button" id="syncExportBtn" type="button">📥 Export All</button>
+          <button class="primary-button" id="syncUploadBtn" type="button">📤 Upload Gist</button>
+          <button class="primary-button" id="syncImportBtn" type="button">📲 Import Gist</button>
+        </div>
       </section>
 
       <section class="stats-grid" aria-label="Token usage overview">

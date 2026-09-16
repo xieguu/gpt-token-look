@@ -17,6 +17,7 @@
 - 默认价格表位于项目目录的 `pricing.json`；界面右上角 `Update prices` 会按需抓取官方 pricing 页面，解析成功后原子写回这个文件。不会自动定时联网。
 - 导出当前筛选结果为 CSV 或 JSON
 - 导出单个会话的完整对话记录为 Markdown 文件（包含消息、工具调用、输出等完整事件）
+- GitHub Gist 备份与跨设备同步：导出所有会话到本地 JSON，上传到 GitHub Gist，其他设备可导入恢复
 - 自动刷新，默认每 30 秒同步一次
 - 支持会话名称/模型搜索、Today 的小时粒度、与上一周期的 token/成本对比和单会话明细复制
 - 可选本地费用/额度告警和浏览器通知
@@ -107,6 +108,55 @@ GET http://127.0.0.1:4173/api/sessions/{sessionId}/full
   ]
 }
 ```
+
+### 同步和备份
+
+三个新的 Gist 同步端点用于跨设备备份：
+
+**导出所有会话**：
+```http
+GET http://127.0.0.1:4173/api/export/all
+```
+
+**上传到 GitHub Gist**：
+```http
+POST http://127.0.0.1:4173/api/sync/upload-gist
+```
+
+请求体：
+```json
+{
+  "githubToken": "ghp_xxxx",
+  "deviceName": "MacBook-Pro"
+}
+```
+
+响应：
+```json
+{
+  "ok": true,
+  "gistId": "xxxx",
+  "gistUrl": "https://gist.github.com/user/xxxx",
+  "fileUrl": "https://gist.githubusercontent.com/..."
+}
+```
+
+**从 GitHub Gist 导入**：
+```http
+POST http://127.0.0.1:4173/api/sync/download-gist
+```
+
+请求体：
+```json
+{
+  "gistId": "xxxx",
+  "githubToken": "ghp_xxxx"
+}
+```
+
+**使用流程**：
+1. 设备 A：点击"📤 Upload Gist"，输入 GitHub Token，获得 Gist ID
+2. 设备 B：点击"📲 Import Gist"，输入 Gist ID，导入所有会话
 
 ### 更新接口
 

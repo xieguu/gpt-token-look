@@ -442,6 +442,9 @@ $$(".granularity-btn").forEach(btn => {
 
 $("#exportJson").addEventListener("click", () => exportSessions("json"));
 $("#exportCsv").addEventListener("click", () => exportSessions("csv"));
+$("#syncExportBtn").addEventListener("click", exportAllSessions);
+$("#syncUploadBtn").addEventListener("click", uploadToGist);
+$("#syncImportBtn").addEventListener("click", importFromGist);
 $("#refreshButton").addEventListener("click", loadRealUsage);
 $("#retryButton").addEventListener("click", loadRealUsage);
 $("#enableNotifications").addEventListener("click", requestNotifications);
@@ -477,6 +480,93 @@ function setupExportButtons() {
       }
     };
   });
+}
+
+async function exportAllSessions() {
+  const token = sessionStorage.getItem(API_TOKEN_KEY);
+  const url = `/api/export/all${token ? `?token=${encodeURIComponent(token)}` : ""}`;
+  try {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`Export failed: ${response.statusText}`);
+    const data = await response.json();
+    const dateStr = localDateIso();
+    const filename = `codex-sessions-backup-${dateStr}.json`;
+    download(filename, "application/json", JSON.stringify(data, null, 2));
+  } catch (error) {
+    alert(`Export failed: ${error.message}`);
+  }
+}
+
+async function uploadToGist() {
+  const token = prompt("Enter your GitHub Personal Access Token (with gist scope):", "");
+  if (!token) return;
+
+  const button = $("#syncUploadBtn");
+  button.disabled = true;
+  button.textContent = "⏳";
+
+  try {
+    const apiToken = sessionStorage.getItem(API_TOKEN_KEY);
+    const url = `/api/sync/upload-gist${apiToken ? `?token=${encodeURIComponent(apiToken)}` : ""}`;
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ githubToken: token, deviceName: navigator.userAgent.split("/")[0] })
+    });
+
+    if (!response.ok) throw new Error(`Upload failed: ${response.statusText}`);
+    const result = await response.json();
+
+    if (result.ok) {
+      const msg = `Uploaded successfully! Gist ID: ${result.gistId}\n\nURL: ${result.gistUrl}\n\nSave this ID to import on another device.`;
+      alert(msg);
+      button.textContent = "✓";
+    } else {
+      throw new Error(result.error || "Unknown error");
+    }
+  } catch (error) {
+    alert(`Upload failed: ${error.message}`);
+    button.textContent = "📤";
+  } finally {
+    button.disabled = false;
+    if (button.textContent === "✓") setTimeout(() => { button.textContent = "📤"; }, 1200);
+  }
+}
+
+async function importFromGist() {
+  const gistId = prompt("Enter the Gist ID to import:", "");
+  if (!gistId) return;
+
+  const token = prompt("(Optional) Enter your GitHub token for private gists:", "");
+  const button = $("#syncImportBtn");
+  button.disabled = true;
+  button.textContent = "⏳";
+
+  try {
+    const apiToken = sessionStorage.getItem(API_TOKEN_KEY);
+    const url = `/api/sync/download-gist${apiToken ? `?token=${encodeURIComponent(apiToken)}` : ""}`;
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ gistId: gistId, githubToken: token || undefined })
+    });
+
+    if (!response.ok) throw new Error(`Import failed: ${response.statusText}`);
+    const result = await response.json();
+
+    if (result.ok) {
+      alert(`Imported ${result.importedCount} sessions successfully!`);
+      button.textContent = "✓";
+    } else {
+      throw new Error(result.error || "Unknown error");
+    }
+  } catch (error) {
+    alert(`Import failed: ${error.message}`);
+    button.textContent = "📥";
+  } finally {
+    button.disabled = false;
+    if (button.textContent === "✓") setTimeout(() => { button.textContent = "📥"; }, 1200);
+  }
 }
 
 $("#themeToggle").addEventListener("click", () => {

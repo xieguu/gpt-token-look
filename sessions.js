@@ -20,6 +20,7 @@ function createSessionsService({ codexDir, cacheDir, cacheTtlMs, scanConcurrency
   const cacheId = crypto.createHash("sha256").update(codexDir).digest("hex").slice(0, 12);
   const cachePath = path.join(cacheDir, `usage-${cacheId}.json`);
   let cache = loadCache(cachePath);
+  let sessionIdToPath = {};
 
   function loadTitles() {
     const titles = new Map();
@@ -92,12 +93,18 @@ function createSessionsService({ codexDir, cacheDir, cacheTtlMs, scanConcurrency
     const cacheExpired = cacheTtlMs === 0 || !lastFullScan || Date.now() - lastFullScan > cacheTtlMs;
     if (cacheExpired) cache.files = {};
 
+    sessionIdToPath = {};
+
     const parsedSessions = await mapWithConcurrency(files, scanConcurrency, async (filePath) => {
       const stat = fs.statSync(filePath);
       const signature = `${stat.size}:${stat.mtimeMs}`;
       const cached = cache.files[filePath];
-      if (cached?.signature === signature) return cached;
+      if (cached?.signature === signature) {
+        sessionIdToPath[cached.id] = filePath;
+        return cached;
+      }
       const parsed = await parseSession(filePath, stat);
+      sessionIdToPath[parsed.id] = filePath;
       cache.files[filePath] = parsed;
       return parsed;
     });
@@ -135,9 +142,7 @@ function createSessionsService({ codexDir, cacheDir, cacheTtlMs, scanConcurrency
   }
 
   async function readSessionFull(sessionId) {
-    const files = listJsonlFiles(sessionsDir);
-    const titles = loadTitles();
-    const sessionFile = files.find((f) => path.basename(f, ".jsonl") === sessionId);
+    const sessionFile = sessionIdToPath[sessionId];
     if (!sessionFile) return null;
 
     const events = [];
@@ -150,7 +155,8 @@ function createSessionsService({ codexDir, cacheDir, cacheTtlMs, scanConcurrency
     }
 
     const sessionMeta = events.find((e) => e.type === "session_meta");
-    const title = titles.get(sessionId) || path.basename(sessionMeta?.payload?.cwd || "") || "Untitled session";
+    const titles = loadTitles();
+    const title = titles.get(sessionId) || "Untitled session";
     const model = events.find((e) => e.type === "turn_context")?.payload?.model || "Codex";
 
     return { sessionId, title, model, events };
