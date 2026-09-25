@@ -592,6 +592,17 @@ h2 { margin: 0; font-size: 18px; letter-spacing: -.03em; }
   font-size: 11px;
 }
 .table-scroll { overflow-x: auto; }
+.table-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-top: 18px;
+}
+.pagination-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+.pagination-controls .secondary-button:disabled { opacity: .45; cursor: not-allowed; }
+.page-count, .table-pagination > .muted { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 table { width: 100%; border-collapse: collapse; min-width: 760px; }
 
 th {

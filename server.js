@@ -29,6 +29,9 @@ const pricingService = createPricingService({ appDir: APP_DIR, pricingFile: proc
 const limitsService = createLimitsService({ codexDir: CODEX_DIR, mode: process.env.TOKEN_LENS_OFFICIAL_USAGE || "auto", timeoutMs: OFFICIAL_TIMEOUT_MS, command: process.env.TOKEN_LENS_CODEX_COMMAND, extraArgs: resolveCodexExtraArgs() });
 const gistService = createGistService();
 const MIME = { ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".json": "application/json; charset=utf-8", ".png": "image/png", ".svg": "image/svg+xml" };
+const PUBLIC_FILES = new Set(["index.html", "styles.css", "app.js", "data.js", "chart.js", "table.js", "export.js", "notifications.js", "token-lens-preview.png"]);
+const MAX_JSON_BODY_BYTES = 64 * 1024;
+let localScanPromise = null;
 let scanPromise = null;
 
 function parsePositiveInt(value, fallback, maximum) {
@@ -52,21 +55,35 @@ function resolveCodexExtraArgs() {
 }
 
 function summarizeCosts(sessions) {
-  const estimated = sessions.filter((item) => item.costBreakdown?.estimated);
-  return { estimatedSessionCount: estimated.length, unpricedSessionCount: sessions.length - estimated.length, totalUsd: estimated.reduce((total, item) => total + Number(item.costUsd || 0), 0) };
+  return sessions.reduce((summary, item) => {
+    if (item.costBreakdown?.estimated) {
+      summary.estimatedSessionCount += 1;
+      summary.totalUsd += Number(item.costUsd || 0);
+    } else summary.unpricedSessionCount += 1;
+    return summary;
+  }, { estimatedSessionCount: 0, unpricedSessionCount: 0, totalUsd: 0 });
 }
 
-async function scanUsage() {
+async function scanLocalUsage() {
   const scanned = await sessionsService.scan();
   const sessions = scanned.sessions.map((item) => {
     const costBreakdown = pricingService.estimateCost(item.model, item);
     return { ...item, costUsd: costBreakdown.totalUsd, costBreakdown };
   });
-  const official = await limitsService.queryOfficialUsage();
+  return { ...scanned, sessions, pricing: pricingService.getPublicPricing(), costSummary: summarizeCosts(sessions) };
+}
+
+function getLocalUsage() {
+  if (!localScanPromise) localScanPromise = scanLocalUsage().finally(() => { localScanPromise = null; });
+  return localScanPromise;
+}
+
+async function scanUsage() {
+  const [scanned, official] = await Promise.all([getLocalUsage(), limitsService.queryOfficialUsage()]);
   const selected = selectRateLimits(official, scanned.latestRateLimits, scanned.latestRateLimitsUpdatedAt);
   return {
-    source: scanned.source, available: scanned.available, scannedAt: scanned.scannedAt, scanDurationMs: scanned.scanDurationMs, sessionCount: sessions.length,
-    pricing: pricingService.getPublicPricing(), costSummary: summarizeCosts(sessions), sessions,
+    source: scanned.source, available: scanned.available, scannedAt: scanned.scannedAt, scanDurationMs: scanned.scanDurationMs, sessionCount: scanned.sessions.length,
+    pricing: scanned.pricing, costSummary: scanned.costSummary, sessions: scanned.sessions,
     rateLimits: selected.rateLimits, rateLimitsSource: selected.rateLimitsSource, rateLimitsUpdatedAt: selected.rateLimitsUpdatedAt,
     accountUsage: official?.usage || null, rateLimitResetCredits: official?.rateLimitResetCredits || null,
     officialQuery: official ? { attempted: true, available: Boolean(official.rateLimits), error: official.error } : { attempted: false, available: false, error: null },
@@ -81,8 +98,48 @@ function getUsage() {
 }
 
 function sendJson(response, status, value) {
+  if (response.destroyed) return;
   response.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", ...securityHeaders() });
   response.end(JSON.stringify(value));
+}
+
+function requestError(statusCode, message) {
+  return Object.assign(new Error(message), { statusCode });
+}
+
+function readJsonBody(request) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    let settled = false;
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      chunks.length = 0;
+      request.off("data", onData);
+      request.resume();
+      reject(error);
+    };
+    const onData = (chunk) => {
+      size += chunk.length;
+      if (size > MAX_JSON_BODY_BYTES) return fail(requestError(413, "JSON body exceeds 64 KiB"));
+      chunks.push(chunk);
+    };
+    request.on("error", (error) => fail(requestError(400, error.message)));
+    request.once("aborted", () => fail(requestError(400, "Request body was aborted")));
+    request.on("data", onData);
+    request.once("end", () => {
+      if (settled) return;
+      let payload;
+      try { payload = JSON.parse(Buffer.concat(chunks, size).toString("utf8")); }
+      catch { return fail(requestError(400, "Invalid JSON body")); }
+      if (!payload || typeof payload !== "object" || Array.isArray(payload)) return fail(requestError(400, "Request body must be a JSON object"));
+      settled = true;
+      chunks.length = 0;
+      resolve(payload);
+    });
+    if (Number(request.headers["content-length"]) > MAX_JSON_BODY_BYTES) fail(requestError(413, "JSON body exceeds 64 KiB"));
+  });
 }
 
 function isAuthorized(request, requestUrl) {
@@ -96,13 +153,13 @@ function securityHeaders() {
   return { "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" };
 }
 
-function serveStatic(request, response) {
-  const requestPath = new URL(request.url, `http://${HOST}`).pathname;
+function serveStatic(requestPath, response) {
   let relative;
   try { relative = requestPath === "/" ? "index.html" : decodeURIComponent(requestPath.slice(1)); }
   catch { response.writeHead(400, securityHeaders()); return response.end("Bad request"); }
   const appRoot = path.resolve(APP_DIR); const resolved = path.resolve(APP_DIR, relative);
   if (!resolved.startsWith(`${appRoot}${path.sep}`) && resolved !== path.join(APP_DIR, "index.html")) { response.writeHead(403, securityHeaders()); return response.end("Forbidden"); }
+  if (!PUBLIC_FILES.has(relative)) { response.writeHead(404, securityHeaders()); return response.end("Not found"); }
   fs.readFile(resolved, (error, body) => {
     if (error) { response.writeHead(error.code === "ENOENT" ? 404 : 500, securityHeaders()); return response.end(error.code === "ENOENT" ? "Not found" : "Read error"); }
     response.writeHead(200, { "Content-Type": MIME[path.extname(resolved)] || "application/octet-stream", "Cache-Control": "no-cache", ...securityHeaders() }); response.end(body);
@@ -110,7 +167,10 @@ function serveStatic(request, response) {
 }
 
 const server = http.createServer(async (request, response) => {
-  const requestUrl = new URL(request.url, `http://${HOST}`); const requestPath = requestUrl.pathname;
+  let requestUrl;
+  try { requestUrl = new URL(request.url, `http://${HOST}`); }
+  catch { return sendJson(response, 400, { error: "Invalid request URL" }); }
+  const requestPath = requestUrl.pathname;
   if (request.method === "POST" && requestPath === "/api/pricing/update") {
     if (!isAuthorized(request, requestUrl)) return sendJson(response, 401, { error: "Invalid or missing Token Lens API token" });
     try { return sendJson(response, 200, { ok: true, pricing: await pricingService.update() }); }
@@ -119,39 +179,29 @@ const server = http.createServer(async (request, response) => {
   if (request.method === "POST" && requestPath === "/api/sync/upload-gist") {
     if (!isAuthorized(request, requestUrl)) return sendJson(response, 401, { error: "Invalid or missing Token Lens API token" });
     try {
-      let body = "";
-      request.on("data", (chunk) => { body += chunk; });
-      request.on("end", async () => {
-        try {
-          const payload = JSON.parse(body);
-          if (!payload.githubToken) return sendJson(response, 400, { error: "githubToken required" });
-          const usage = await getUsage();
-          const result = await gistService.uploadToGist(usage.sessions, payload.githubToken, { deviceName: payload.deviceName || "Unknown" });
-          return sendJson(response, 200, { ok: true, ...result });
-        } catch (error) { return sendJson(response, 500, { error: "Failed to upload to Gist", detail: error.message }); }
-      });
-    } catch (error) { return sendJson(response, 500, { error: "Request parsing failed", detail: error.message }); }
+      const payload = await readJsonBody(request);
+      if (typeof payload.githubToken !== "string" || !payload.githubToken.trim()) throw requestError(400, "githubToken must be a non-empty string");
+      if (payload.deviceName !== undefined && typeof payload.deviceName !== "string") throw requestError(400, "deviceName must be a string");
+      const usage = await getLocalUsage();
+      const result = await gistService.uploadToGist(usage.sessions, payload.githubToken, { deviceName: payload.deviceName || "Unknown" });
+      return sendJson(response, 200, { ok: true, ...result });
+    } catch (error) { return sendJson(response, error.statusCode || 502, { error: error.statusCode ? error.message : "Failed to upload to Gist", detail: error.message }); }
   }
   if (request.method === "POST" && requestPath === "/api/sync/download-gist") {
     if (!isAuthorized(request, requestUrl)) return sendJson(response, 401, { error: "Invalid or missing Token Lens API token" });
     try {
-      let body = "";
-      request.on("data", (chunk) => { body += chunk; });
-      request.on("end", async () => {
-        try {
-          const payload = JSON.parse(body);
-          if (!payload.gistId) return sendJson(response, 400, { error: "gistId required" });
-          const result = await gistService.downloadFromGist(payload.gistId, payload.githubToken || "");
-          return sendJson(response, 200, { ok: true, data: result, importedCount: result.sessions?.length || 0 });
-        } catch (error) { return sendJson(response, 500, { error: "Failed to download from Gist", detail: error.message }); }
-      });
-    } catch (error) { return sendJson(response, 500, { error: "Request parsing failed", detail: error.message }); }
+      const payload = await readJsonBody(request);
+      if (typeof payload.gistId !== "string" || !/^[a-f0-9]{1,64}$/i.test(payload.gistId)) throw requestError(400, "gistId must be a hexadecimal Gist ID");
+      if (payload.githubToken !== undefined && typeof payload.githubToken !== "string") throw requestError(400, "githubToken must be a string");
+      const result = await gistService.downloadFromGist(payload.gistId, payload.githubToken || "");
+      return sendJson(response, 200, { ok: true, data: result, importedCount: result.sessions?.length || 0 });
+    } catch (error) { return sendJson(response, error.statusCode || 502, { error: error.statusCode ? error.message : "Failed to download from Gist", detail: error.message }); }
   }
   if (request.method !== "GET") { response.writeHead(405, securityHeaders()); return response.end("Method not allowed"); }
   if (requestPath === "/api/export/all") {
     if (!isAuthorized(request, requestUrl)) return sendJson(response, 401, { error: "Invalid or missing Token Lens API token" });
     try {
-      const usage = await getUsage();
+      const usage = await getLocalUsage();
       const exportData = {
         version: "1.0",
         exportedAt: new Date().toISOString(),
@@ -177,14 +227,16 @@ const server = http.createServer(async (request, response) => {
   const sessionMatch = requestPath.match(/^\/api\/sessions\/([^\/]+)\/full$/);
   if (sessionMatch) {
     if (!isAuthorized(request, requestUrl)) return sendJson(response, 401, { error: "Invalid or missing Token Lens API token" });
+    let sessionId;
+    try { sessionId = decodeURIComponent(sessionMatch[1]); }
+    catch { return sendJson(response, 400, { error: "Invalid session ID encoding" }); }
     try {
-      const sessionId = decodeURIComponent(sessionMatch[1]);
       const sessionData = await sessionsService.readSessionFull(sessionId);
       if (!sessionData) return sendJson(response, 404, { error: "Session not found" });
       return sendJson(response, 200, sessionData);
     } catch (error) { return sendJson(response, 500, { error: "Unable to read session", detail: error.message }); }
   }
-  serveStatic(request, response);
+  serveStatic(requestPath, response);
 });
 
 server.on("error", (error) => { if (error.code === "EADDRINUSE") console.error(`Port ${PORT} is already in use. Token Lens may already be running, or set TOKEN_LENS_PORT to another port.`); else console.error(`Token Lens failed to start: ${error.message}`); process.exitCode = 1; });

@@ -2,8 +2,11 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const readline = require("node:readline");
+const { finished } = require("node:stream/promises");
+const { promisify } = require("node:util");
 
 const CACHE_VERSION = 2;
+const statFile = promisify(fs.stat);
 
 function localDateIso(value = new Date()) {
   const date = value instanceof Date ? value : new Date(value);
@@ -14,33 +17,47 @@ function localDateIso(value = new Date()) {
   return `${year}-${month}-${day}`;
 }
 
-function createSessionsService({ codexDir, cacheDir, cacheTtlMs, scanConcurrency }) {
+function createSessionsService({ codexDir, cacheDir, cacheTtlMs = 900000, scanConcurrency = 3 }) {
   const sessionsDir = path.join(codexDir, "sessions");
   const indexPath = path.join(codexDir, "session_index.jsonl");
   const cacheId = crypto.createHash("sha256").update(codexDir).digest("hex").slice(0, 12);
   const cachePath = path.join(cacheDir, `usage-${cacheId}.json`);
-  let cache = loadCache(cachePath);
-  let sessionIdToPath = {};
+  let cache;
+  const cacheReady = loadCache(cachePath).then((loaded) => { cache = loaded; });
+  let cacheDirty = false;
+  let scanPromise = null;
+  let sessionIdToPath = null;
+  let titleCache = { signature: null, titles: new Map() };
+  let summaryCache = null;
 
-  function loadTitles() {
-    const titles = new Map();
-    if (!fs.existsSync(indexPath)) return titles;
-    for (const line of fs.readFileSync(indexPath, "utf8").split(/\r?\n/)) {
-      if (!line.trim()) continue;
-      try {
-        const item = JSON.parse(line);
-        if (item.id) titles.set(item.id, item.thread_name || "Untitled session");
-      } catch {
-        // The active index can briefly end with an incomplete line.
-      }
+  async function loadTitles() {
+    try {
+      const stat = await fs.promises.stat(indexPath);
+      const signature = fileSignature(stat);
+      if (titleCache.signature === signature) return titleCache.titles;
+      const titles = new Map();
+      await readLines(indexPath, (line) => {
+        if (!line.trim()) return;
+        try {
+          const item = JSON.parse(line);
+          if (item.id) titles.set(item.id, item.thread_name || "Untitled session");
+        } catch {
+          // The active index can briefly end with an incomplete line.
+        }
+      });
+      titleCache = { signature, titles };
+      return titles;
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      if (titleCache.signature !== null) titleCache = { signature: null, titles: new Map() };
+      return titleCache.titles;
     }
-    return titles;
   }
 
   async function parseSession(filePath, stat) {
     const session = {
       filePath,
-      signature: `${stat.size}:${stat.mtimeMs}`,
+      signature: fileSignature(stat),
       id: path.basename(filePath, ".jsonl"),
       startedAt: stat.birthtime.toISOString(),
       updatedAt: stat.mtime.toISOString(),
@@ -53,10 +70,8 @@ function createSessionsService({ codexDir, cacheDir, cacheTtlMs, scanConcurrency
       parseErrors: 0
     };
 
-    const stream = fs.createReadStream(filePath, { encoding: "utf8" });
-    const lines = readline.createInterface({ input: stream, crlfDelay: Infinity });
-    for await (const line of lines) {
-      if (!/"type"\s*:\s*"(?:session_meta|turn_context|token_count)"/.test(line)) continue;
+    await readLines(filePath, (line) => {
+      if (!/"type"\s*:\s*"(?:session_meta|turn_context|token_count)"/.test(line)) return;
       try {
         const event = JSON.parse(line);
         if (event.type === "session_meta") {
@@ -80,89 +95,132 @@ function createSessionsService({ codexDir, cacheDir, cacheTtlMs, scanConcurrency
         session.parseErrors += 1;
         if (session.parseErrors <= 3) console.warn(`Unable to parse JSONL event in ${filePath}: ${error.message}`);
       }
-    }
+    });
     return session;
   }
 
-  async function scan() {
+  function scan() {
+    if (!scanPromise) scanPromise = scanFiles().finally(() => { scanPromise = null; });
+    return scanPromise;
+  }
+
+  async function scanFiles() {
     const started = Date.now();
-    const titles = loadTitles();
-    const files = listJsonlFiles(sessionsDir);
-    const activePaths = new Set(files);
+    const [titles, { files, available }] = await Promise.all([loadTitles(), listJsonlFiles(sessionsDir), cacheReady]);
     const lastFullScan = Number(cache.fullScanAt || cache.updatedAt || 0);
     const cacheExpired = cacheTtlMs === 0 || !lastFullScan || Date.now() - lastFullScan > cacheTtlMs;
-    if (cacheExpired) cache.files = {};
+    let parsedFileCount = 0;
 
-    sessionIdToPath = {};
-
-    const parsedSessions = await mapWithConcurrency(files, scanConcurrency, async (filePath) => {
-      const stat = fs.statSync(filePath);
-      const signature = `${stat.size}:${stat.mtimeMs}`;
+    const entries = await mapWithConcurrency(files, 32, async (filePath) => ({ filePath, stat: await statFile(filePath) }));
+    const parsedSessions = await mapWithConcurrency(entries, scanConcurrency, async ({ filePath, stat }) => {
+      const signature = fileSignature(stat);
       const cached = cache.files[filePath];
-      if (cached?.signature === signature) {
-        sessionIdToPath[cached.id] = filePath;
-        return cached;
-      }
-      const parsed = await parseSession(filePath, stat);
-      sessionIdToPath[parsed.id] = filePath;
-      cache.files[filePath] = parsed;
-      return parsed;
+      if (!cacheExpired && cached?.signature === signature) return cached;
+      parsedFileCount += 1;
+      return parseSession(filePath, stat);
     });
 
-    for (const filePath of Object.keys(cache.files)) {
-      if (!activePaths.has(filePath)) delete cache.files[filePath];
+    const cacheChanged = cacheExpired || parsedFileCount > 0 || files.length !== Object.keys(cache.files).length;
+    if (cacheChanged) {
+      cacheDirty = true;
+      cache = {
+        version: CACHE_VERSION,
+        files: Object.fromEntries(parsedSessions.map((session) => [session.filePath, session])),
+        fullScanAt: cacheExpired ? Date.now() : lastFullScan
+      };
     }
-    if (cacheExpired) cache.fullScanAt = Date.now();
-    saveCache(cachePath, cacheDir, cache);
+    if (cacheChanged || !sessionIdToPath) sessionIdToPath = new Map(parsedSessions.map((session) => [session.id, session.filePath]));
+    const cacheWritten = cacheDirty ? await saveCache(cachePath, cacheDir, cache) : false;
+    if (cacheWritten) cacheDirty = false;
 
-    const sessions = parsedSessions
-      .filter((item) => item?.usage)
-      .map((item) => normalizeSession(item, titles))
-      .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
-    const latestLimitSession = sessions
-      .filter((item) => item.rateLimits?.primary || item.rateLimits?.secondary)
-      .sort((a, b) => String(b.rateLimitsTimestamp || b.usageTimestamp || "").localeCompare(String(a.rateLimitsTimestamp || a.usageTimestamp || "")))[0];
+    const summaryReused = Boolean(summaryCache && !cacheChanged && summaryCache.titles === titles);
+    if (!summaryReused) {
+      const sessions = [];
+      let latestLimitSession = null;
+      let latestLimitTimestamp = -Infinity;
+      let parseErrorCount = 0;
+      for (const session of parsedSessions) {
+        if (session.usage) sessions.push(normalizeSession(session, titles));
+        parseErrorCount += session.parseErrors || 0;
+        if (!session.rateLimits?.primary && !session.rateLimits?.secondary) continue;
+        const timestamp = Date.parse(session.rateLimitsTimestamp || session.usageTimestamp || session.updatedAt);
+        if (Number.isFinite(timestamp) && timestamp > latestLimitTimestamp) {
+          latestLimitSession = session;
+          latestLimitTimestamp = timestamp;
+        }
+      }
+      sessions.sort((first, second) => String(second.updatedAt).localeCompare(String(first.updatedAt)));
+      summaryCache = {
+        titles,
+        sessions,
+        latestRateLimits: latestLimitSession?.rateLimits || null,
+        latestRateLimitsUpdatedAt: latestLimitSession?.rateLimitsTimestamp || latestLimitSession?.usageTimestamp || latestLimitSession?.updatedAt || null,
+        parseErrorCount
+      };
+    }
 
     return {
       source: process.env.CODEX_HOME ? "$CODEX_HOME/sessions" : "~/.codex/sessions",
-      available: fs.existsSync(sessionsDir),
+      available,
       scannedAt: new Date().toISOString(),
       scanDurationMs: Date.now() - started,
-      sessionCount: sessions.length,
-      sessions,
-      latestRateLimits: latestLimitSession?.rateLimits || null,
-      latestRateLimitsUpdatedAt: latestLimitSession?.rateLimitsTimestamp || latestLimitSession?.usageTimestamp || null,
+      sessionCount: summaryCache.sessions.length,
+      sessions: summaryCache.sessions,
+      latestRateLimits: summaryCache.latestRateLimits,
+      latestRateLimitsUpdatedAt: summaryCache.latestRateLimitsUpdatedAt,
       diagnostics: {
         cacheTtlMs,
         cacheExpired,
         scanConcurrency,
-        parseErrorCount: sessions.reduce((total, item) => total + item.parseErrors, 0)
+        parsedFileCount,
+        cachedFileCount: files.length - parsedFileCount,
+        cacheWritten,
+        summaryReused,
+        parseErrorCount: summaryCache.parseErrorCount
       }
     };
   }
 
   async function readSessionFull(sessionId) {
-    const sessionFile = sessionIdToPath[sessionId];
+    if (scanPromise || !sessionIdToPath?.has(sessionId)) await scan();
+    const sessionFile = sessionIdToPath.get(sessionId);
     if (!sessionFile) return null;
 
     const events = [];
-    const stream = fs.createReadStream(sessionFile, { encoding: "utf8" });
-    const lines = readline.createInterface({ input: stream, crlfDelay: Infinity });
-    for await (const line of lines) {
-      if (!line.trim()) continue;
-      try { events.push(JSON.parse(line)); }
+    let model = "Codex";
+    await readLines(sessionFile, (line) => {
+      if (!line.trim()) return;
+      try {
+        const event = JSON.parse(line);
+        events.push(event);
+        if (event.type === "turn_context") model = event.payload?.model || model;
+      }
       catch (error) { console.warn(`Unable to parse JSONL event in ${sessionFile}: ${error.message}`); }
-    }
+    });
 
-    const sessionMeta = events.find((e) => e.type === "session_meta");
-    const titles = loadTitles();
+    const titles = await loadTitles();
     const title = titles.get(sessionId) || "Untitled session";
-    const model = events.find((e) => e.type === "turn_context")?.payload?.model || "Codex";
 
     return { sessionId, title, model, events };
   }
 
   return { scan, readSessionFull, sessionsDir };
+}
+
+async function readLines(filePath, consume) {
+  const stream = fs.createReadStream(filePath, { encoding: "utf8" });
+  const lines = readline.createInterface({ input: stream, crlfDelay: Infinity });
+  lines.on("error", (error) => stream.destroy(error));
+  lines.on("line", (line) => {
+    if (stream.destroyed) return;
+    try { consume(line); }
+    catch (error) { stream.destroy(error); }
+  });
+  try { await finished(stream); }
+  finally {
+    lines.close();
+    stream.destroy();
+  }
 }
 
 function normalizeSession(item, titles) {
@@ -190,19 +248,28 @@ function normalizeSession(item, titles) {
   };
 }
 
-function listJsonlFiles(root) {
+function fileSignature(stat) {
+  return `${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}:${stat.ino}`;
+}
+
+async function listJsonlFiles(root) {
   const result = [];
-  if (!fs.existsSync(root)) return result;
   const pending = [root];
   while (pending.length) {
     const current = pending.pop();
-    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+    let entries;
+    try { entries = await fs.promises.readdir(current, { withFileTypes: true }); }
+    catch (error) {
+      if (error.code === "ENOENT" && current === root) return { files: [], available: false };
+      throw error;
+    }
+    for (const entry of entries) {
       const fullPath = path.join(current, entry.name);
       if (entry.isDirectory()) pending.push(fullPath);
       else if (entry.isFile() && entry.name.endsWith(".jsonl")) result.push(fullPath);
     }
   }
-  return result;
+  return { files: result, available: true };
 }
 
 async function mapWithConcurrency(items, limit, mapper) {
@@ -218,25 +285,30 @@ async function mapWithConcurrency(items, limit, mapper) {
   return output;
 }
 
-function loadCache(cachePath) {
+async function loadCache(cachePath) {
   try {
-    const parsed = JSON.parse(fs.readFileSync(cachePath, "utf8"));
-    return parsed && parsed.version === CACHE_VERSION
+    const parsed = JSON.parse(await fs.promises.readFile(cachePath, "utf8"));
+    return parsed && parsed.version === CACHE_VERSION && parsed.files && typeof parsed.files === "object" && !Array.isArray(parsed.files)
       ? parsed
       : { version: CACHE_VERSION, files: {}, fullScanAt: 0 };
-  } catch {
+  } catch (error) {
+    if (error.code !== "ENOENT") console.warn(`Unable to read incremental cache: ${error.message}`);
     return { version: CACHE_VERSION, files: {}, fullScanAt: 0 };
   }
 }
 
-function saveCache(cachePath, cacheDir, cache) {
+async function saveCache(cachePath, cacheDir, cache) {
+  const temporary = `${cachePath}.${crypto.randomUUID()}.tmp`;
   try {
-    fs.mkdirSync(cacheDir, { recursive: true });
-    const temporary = `${cachePath}.tmp`;
-    fs.writeFileSync(temporary, JSON.stringify(cache), "utf8");
-    fs.renameSync(temporary, cachePath);
+    await fs.promises.mkdir(cacheDir, { recursive: true });
+    await fs.promises.writeFile(temporary, JSON.stringify(cache), { encoding: "utf8", flag: "wx", mode: 0o600 });
+    await fs.promises.rename(temporary, cachePath);
+    return true;
   } catch (error) {
     console.warn(`Unable to write incremental cache; continuing without cache: ${error.message}`);
+    return false;
+  } finally {
+    await fs.promises.rm(temporary, { force: true }).catch((error) => console.warn(`Unable to remove temporary cache: ${error.message}`));
   }
 }
 

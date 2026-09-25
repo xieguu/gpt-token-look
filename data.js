@@ -4,9 +4,8 @@
   else root.TokenLensData = api;
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   function asDate(value) {
-    if (value instanceof Date) return value;
     if (value == null || value === "") return null;
-    const date = new Date(value);
+    const date = value instanceof Date ? value : new Date(value);
     return Number.isNaN(date.getTime()) ? null : date;
   }
 
@@ -27,22 +26,35 @@
 
   function filterSessions(sessions, filters, now = new Date()) {
     const state = { period: "today", modelFilter: "all", dateFrom: "", dateTo: "", searchQuery: "", ...filters };
-    let result = [...sessions];
-    if (state.period === "today") {
-      const today = localDateIso(now);
-      result = result.filter((item) => localDateFromSession(item) === today);
-    } else if (state.period !== "all") {
-      const threshold = now.getTime() - Number(state.period) * 86400000;
-      result = result.filter((item) => (asDate(item.updatedAt) || asDate(item.startedAt))?.getTime() >= threshold);
-    }
-    if (state.modelFilter !== "all") result = result.filter((item) => item.model === state.modelFilter);
-    if (state.dateFrom) result = result.filter((item) => localDateFromSession(item) >= state.dateFrom);
-    if (state.dateTo) result = result.filter((item) => localDateFromSession(item) <= state.dateTo);
-    if (state.searchQuery) {
-      const query = state.searchQuery.toLowerCase();
-      result = result.filter((item) => (item.name || "").toLowerCase().includes(query) || (item.model || "").toLowerCase().includes(query));
-    }
-    return result;
+    const today = state.period === "today" ? localDateIso(now) : null;
+    const threshold = state.period !== "all" && !today ? now.getTime() - Number(state.period) * 86400000 : null;
+    const query = state.searchQuery.toLowerCase();
+    return sessions.filter((item) => {
+      if (state.modelFilter !== "all" && item.model !== state.modelFilter) return false;
+      if (query && !(item.name || "").toLowerCase().includes(query) && !(item.model || "").toLowerCase().includes(query)) return false;
+      if (threshold !== null && !((asDate(item.updatedAt) || asDate(item.startedAt))?.getTime() >= threshold)) return false;
+      if (today || state.dateFrom || state.dateTo) {
+        const date = localDateFromSession(item);
+        if (today && date !== today) return false;
+        if (state.dateFrom && date < state.dateFrom) return false;
+        if (state.dateTo && date > state.dateTo) return false;
+      }
+      return true;
+    });
+  }
+
+  function summarizeSessions(sessions) {
+    return sessions.reduce((summary, session) => {
+      const input = Number(session.input) || 0;
+      const output = Number(session.output) || 0;
+      summary.input += input;
+      summary.cachedInput += Number(session.cachedInput) || 0;
+      summary.output += output;
+      summary.total += Number(session.total) || input + output;
+      summary.costUsd += Number(session.costUsd) || 0;
+      if (session.costBreakdown?.estimated) summary.priced += 1;
+      return summary;
+    }, { input: 0, cachedInput: 0, output: 0, total: 0, costUsd: 0, priced: 0 });
   }
 
   function relativeTime(value, now = Date.now()) {
@@ -102,15 +114,15 @@
     const filename = `codex-token-lens-${localDateIso(now)}.${format}`;
     const normalized = sessions.map((item) => ({ ...item, date: localDateFromSession(item) }));
     if (format === "json") return { filename, type: "application/json", body: JSON.stringify({ exportedAt: now.toISOString(), filters, sessions: normalized }, null, 2) };
-    const columns = ["date", "name", "model", "input", "cachedInput", "output", "reasoningOutput", "total", "costUsd", "priced"];
+    const columns = ["date", "name", "model", "input", "cachedInput", "cacheWriteInput", "output", "reasoningOutput", "total", "costUsd", "priced"];
     const rows = [columns.join(","), ...normalized.map((item) => columns.map((column) => csvCell(column === "priced" ? Boolean(item.costBreakdown?.estimated) : item[column])).join(","))];
     return { filename, type: "text/csv", body: rows.join("\n") };
   }
 
   function csvCell(value) {
     const text = String(value ?? "");
-    return /[",\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+    return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
   }
 
-  return { asDate, fetchUsage, filterSessions, localDateIso, localDateFromSession, pricingStatus, rateLimitSource, relativeTime, serializeExport, updatePricing };
+  return { asDate, fetchUsage, filterSessions, localDateIso, localDateFromSession, pricingStatus, rateLimitSource, relativeTime, serializeExport, summarizeSessions, updatePricing };
 });

@@ -75,3 +75,45 @@ test("pricing status reports stale and failed-update states", () => {
   assert.equal(failed.stale, false);
   assert.equal(failed.updateError, "offline");
 });
+
+test("invalid Date objects do not propagate into hourly chart buckets", () => {
+  assert.equal(data.asDate(new Date(NaN)), null);
+  assert.equal(chart.hourOf({ startedAt: new Date(NaN) }), null);
+});
+
+test("combined date filters calculate a session's local date only once", () => {
+  let dateReads = 0;
+  const session = {
+    model: "sol",
+    name: "Morning",
+    get startedAt() { dateReads += 1; return localIso(25, 8); }
+  };
+  const result = data.filterSessions([session], {
+    period: "today", dateFrom: "2026-08-24", dateTo: "2026-08-26", modelFilter: "sol", searchQuery: "MORNING"
+  }, new Date(2026, 7, 25, 12));
+  assert.deepEqual(result, [session]);
+  assert.equal(dateReads, 1);
+});
+
+test("filtering preserves source order without mutating its input", () => {
+  const input = Object.freeze(sessions.map((session) => Object.freeze({ ...session })));
+  const result = data.filterSessions(input, { period: "all" });
+  assert.deepEqual(result, input);
+  assert.notStrictEqual(result, input);
+});
+
+test("single-pass summaries include token totals missing on individual sessions", () => {
+  const summary = data.summarizeSessions([
+    { input: 10, cachedInput: 4, output: 5, total: 15, costUsd: 0.25, costBreakdown: { estimated: true } },
+    { input: 20, output: 10 }
+  ]);
+  assert.deepEqual(summary, { input: 30, cachedInput: 4, output: 15, total: 45, costUsd: 0.25, priced: 1 });
+  assert.deepEqual(data.summarizeSessions([]), { input: 0, cachedInput: 0, output: 0, total: 0, costUsd: 0, priced: 0 });
+});
+
+test("CSV exports include cache-write tokens and quote carriage returns", () => {
+  const output = data.serializeExport("csv", [{ name: "first\rsecond", cacheWriteInput: 42 }], { period: "all" });
+  assert.match(output.body, /cachedInput,cacheWriteInput,output/);
+  assert.match(output.body, /"first\rsecond"/);
+  assert.match(output.body, /,42,/);
+});

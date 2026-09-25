@@ -141,6 +141,14 @@
             <tbody id="sessionTable"></tbody>
           </table>
         </div>
+        <div class="table-pagination">
+          <span class="muted" id="sessionPageSummary" role="status" aria-live="polite">0 sessions</span>
+          <nav class="pagination-controls" aria-label="Session pages">
+            <button class="secondary-button" id="sessionPrevious" type="button" aria-controls="sessionTable" disabled>← Previous</button>
+            <span class="page-count" id="sessionPageStatus">Page 1 of 1</span>
+            <button class="secondary-button" id="sessionNext" type="button" aria-controls="sessionTable" disabled>Next →</button>
+          </nav>
+        </div>
       </section>
     </main>
 

@@ -29,9 +29,13 @@ const state = {
   dateTo: "",
   searchQuery: "",
   chartGranularity: "day",
+  sessionPage: 1,
   error: null,
   alerts: { dailyCostUsd: null, remainingPercent: 10 }
 };
+let searchRenderTimer = null;
+let tableSessions = [];
+let tableFilterKey = null;
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -42,10 +46,6 @@ const pct = new Intl.NumberFormat("en", { style: "percent", signDisplay: "except
 
 function filteredSessions() {
   return TokenLensData.filterSessions(state.sessions, state);
-}
-
-function sum(items, field) {
-  return items.reduce((total, item) => total + Number(item[field] || 0), 0);
 }
 
 function setState(patch, shouldRender = true) {
@@ -95,17 +95,14 @@ function comparisonSessions() {
   };
 }
 
-function computeComparison(sessions) {
+function computeComparison(sessions, summary) {
   const comparison = comparisonSessions();
   if (!sessions.length || !comparison.sessions) return null;
-  const prevTotal = sum(comparison.sessions, "total") || sum(comparison.sessions, "input") + sum(comparison.sessions, "output");
-  const curTotal = sum(sessions, "total") || sum(sessions, "input") + sum(sessions, "output");
-  const prevCost = sum(comparison.sessions, "costUsd");
-  const curCost = sum(sessions, "costUsd");
-  if (!prevTotal && !prevCost) return null;
+  const previous = TokenLensData.summarizeSessions(comparison.sessions);
+  if (!previous.total && !previous.costUsd) return null;
   return {
-    tokens: prevTotal ? (curTotal - prevTotal) / prevTotal : null,
-    cost: prevCost ? (curCost - prevCost) / prevCost : null,
+    tokens: previous.total ? (summary.total - previous.total) / previous.total : null,
+    cost: previous.costUsd ? (summary.costUsd - previous.costUsd) / previous.costUsd : null,
     label: comparison.label
   };
 }
@@ -118,14 +115,16 @@ function formatDelta(ratio) {
 }
 
 function render() {
-  populateModelFilter();
-  const sessions = filteredSessions().sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
-  const input = sum(sessions, "input");
-  const cachedInput = sum(sessions, "cachedInput");
-  const output = sum(sessions, "output");
-  const total = sum(sessions, "total") || input + output;
-  const cost = sum(sessions, "costUsd");
-  const priced = sessions.filter((item) => item.costBreakdown?.estimated).length;
+  clearTimeout(searchRenderTimer);
+  searchRenderTimer = null;
+  const filterKey = JSON.stringify(currentFilters());
+  if (filterKey !== tableFilterKey) {
+    state.sessionPage = 1;
+    tableFilterKey = filterKey;
+  }
+  const sessions = filteredSessions();
+  const summary = TokenLensData.summarizeSessions(sessions);
+  const { input, cachedInput, output, total, costUsd: cost, priced } = summary;
   const inputPercent = total ? (input / (input + output || total)) * 100 : 0;
   const average = sessions.length ? Math.round(total / sessions.length) : 0;
 
@@ -138,7 +137,7 @@ function render() {
   $("#costUsd").textContent = money.format(cost);
   $("#costSummary").textContent = priced ? `${priced}/${sessions.length} sessions priced` : "No priced model in current filter";
 
-  const comp = computeComparison(sessions);
+  const comp = computeComparison(sessions, summary);
   $("#tokenDelta").innerHTML = comp?.tokens != null ? `${formatDelta(comp.tokens)} <span class="delta-label">vs ${comp.label}</span>` : "";
   $("#costDelta").innerHTML = comp?.cost != null ? `${formatDelta(comp.cost)} <span class="delta-label">vs ${comp.label}</span>` : "";
 
@@ -146,13 +145,44 @@ function render() {
   renderRateLimits();
   renderPricingStatus();
   $("#averageTokens").textContent = compact.format(average);
-  $("#sessionSummary").textContent = `${sessions.length} sessions · ${state.searchQuery ? `search: "${escapeHtml(state.searchQuery)}"` : "no filter"}`;
+  $("#sessionSummary").textContent = `${sessions.length} sessions · ${state.searchQuery ? `search: "${state.searchQuery}"` : "no filter"}`;
   TokenLensChart.renderMiniBars($("#miniBars"), sessions);
-  TokenLensChart.render({ sessions, granularity: state.chartGranularity, period: state.period, chart: $("#usageChart"), yAxis: $("#yAxis"), compact, integer });
-  TokenLensTable.render({ body: $("#sessionTable"), sessions, integer, money, escapeHtml, shorten, clipboard: navigator.clipboard });
+  tableSessions = sessions;
+  renderUsageChart();
+  renderSessionTable();
   renderInsights(sessions, input, cachedInput, output, cost);
   TokenLensNotifications.renderAlerts({ banner: $("#alertBanner"), messageNode: $("#alertMsg"), rateLimits: state.rateLimits, alerts: state.alerts, cost, money });
+}
+
+function renderUsageChart() {
+  TokenLensChart.render({ sessions: tableSessions, granularity: state.chartGranularity, period: state.period, chart: $("#usageChart"), yAxis: $("#yAxis"), compact, integer });
+}
+
+function renderSessionTable() {
+  if (state.error) {
+    $("#sessionTable").innerHTML = TokenLensTable.emptyRow(8, "Connection failed. Click Retry to try again.");
+    $("#sessionPageSummary").textContent = "Sessions unavailable";
+    $("#sessionPageStatus").textContent = "--";
+    $("#sessionPrevious").disabled = true;
+    $("#sessionNext").disabled = true;
+    return;
+  }
+  const pagination = TokenLensTable.render({ body: $("#sessionTable"), sessions: tableSessions, page: state.sessionPage, integer, money, escapeHtml, shorten, clipboard: navigator.clipboard });
+  state.sessionPage = pagination.page;
+  $("#sessionPageSummary").textContent = pagination.total
+    ? `${integer.format(pagination.start)}–${integer.format(pagination.end)} of ${integer.format(pagination.total)} sessions`
+    : "0 sessions";
+  $("#sessionPageStatus").textContent = `Page ${pagination.page} of ${pagination.pageCount}`;
+  $("#sessionPrevious").disabled = pagination.page <= 1;
+  $("#sessionNext").disabled = pagination.page >= pagination.pageCount;
   setupExportButtons();
+}
+
+function changeSessionPage(delta) {
+  if (state.error) return;
+  if (searchRenderTimer !== null) render();
+  state.sessionPage += delta;
+  renderSessionTable();
 }
 
 function renderAccountUsage() {
@@ -347,7 +377,8 @@ async function loadRealUsage() {
   try {
     const token = sessionStorage.getItem(API_TOKEN_KEY);
     const data = await TokenLensData.fetchUsage(fetch, token);
-    state.sessions = data.sessions || [];
+    state.sessions = [...(data.sessions || [])].sort((first, second) => String(second.updatedAt).localeCompare(String(first.updatedAt)));
+    populateModelFilter();
     state.rateLimits = data.rateLimits;
     state.rateLimitsSource = data.rateLimitsSource || "unavailable";
     state.rateLimitsUpdatedAt = data.rateLimitsUpdatedAt || null;
@@ -370,7 +401,7 @@ async function loadRealUsage() {
     $("#lastUpdated").textContent = error.message;
     $("#errorBanner").style.display = "flex";
     $("#errorBanner").querySelector("#errorMsg").textContent = error.message;
-    $("#sessionTable").innerHTML = TokenLensTable.emptyRow(7, "Connection failed. Click Retry to try again.");
+    renderSessionTable();
   } finally {
     state.loading = false;
     $("#refreshButton").classList.remove("loading");
@@ -413,7 +444,8 @@ $("#dateTo").addEventListener("change", (event) => {
 
 $("#searchInput").addEventListener("input", (event) => {
   state.searchQuery = event.target.value.trim();
-  render();
+  clearTimeout(searchRenderTimer);
+  searchRenderTimer = setTimeout(render, 150);
 });
 
 $("#clearFilters").addEventListener("click", () => {
@@ -431,17 +463,21 @@ $("#clearFilters").addEventListener("click", () => {
 });
 
 // Chart granularity toggle (hourly only for today)
-$$(".granularity-btn").forEach(btn => {
-  btn.addEventListener("click", () => {
-    $$(".granularity-btn").forEach(b => b.classList.remove("active"));
-    btn.classList.add("active");
-    state.chartGranularity = btn.dataset.granularity;
-    render();
+$$(".granularity-btn").forEach((button) => {
+  button.addEventListener("click", () => {
+    if (state.chartGranularity === button.dataset.granularity && searchRenderTimer === null) return;
+    $$(".granularity-btn").forEach((item) => item.classList.remove("active"));
+    button.classList.add("active");
+    state.chartGranularity = button.dataset.granularity;
+    if (searchRenderTimer !== null) render();
+    else renderUsageChart();
   });
 });
 
 $("#exportJson").addEventListener("click", () => exportSessions("json"));
 $("#exportCsv").addEventListener("click", () => exportSessions("csv"));
+$("#sessionPrevious").addEventListener("click", () => changeSessionPage(-1));
+$("#sessionNext").addEventListener("click", () => changeSessionPage(1));
 $("#syncExportBtn").addEventListener("click", exportAllSessions);
 $("#syncUploadBtn").addEventListener("click", uploadToGist);
 $("#syncImportBtn").addEventListener("click", importFromGist);
@@ -461,8 +497,8 @@ function setupExportButtons() {
       btn.disabled = true;
       try {
         const token = sessionStorage.getItem(API_TOKEN_KEY);
-        const url = `/api/sessions/${encodeURIComponent(sessionId)}/full${token ? `?token=${encodeURIComponent(token)}` : ""}`;
-        const response = await fetch(url);
+        const url = `/api/sessions/${encodeURIComponent(sessionId)}/full`;
+        const response = await fetch(url, { cache: "no-store", headers: token ? { "x-token-lens-token": token } : {} });
         if (!response.ok) throw new Error(`Failed to fetch session: ${response.statusText}`);
         const sessionData = await response.json();
         const markdown = TokenLensExport.formatSessionToMarkdown(sessionData);
@@ -484,9 +520,9 @@ function setupExportButtons() {
 
 async function exportAllSessions() {
   const token = sessionStorage.getItem(API_TOKEN_KEY);
-  const url = `/api/export/all${token ? `?token=${encodeURIComponent(token)}` : ""}`;
+  const url = "/api/export/all";
   try {
-    const response = await fetch(url);
+    const response = await fetch(url, { cache: "no-store", headers: token ? { "x-token-lens-token": token } : {} });
     if (!response.ok) throw new Error(`Export failed: ${response.statusText}`);
     const data = await response.json();
     const dateStr = localDateIso();
@@ -507,10 +543,10 @@ async function uploadToGist() {
 
   try {
     const apiToken = sessionStorage.getItem(API_TOKEN_KEY);
-    const url = `/api/sync/upload-gist${apiToken ? `?token=${encodeURIComponent(apiToken)}` : ""}`;
+    const url = "/api/sync/upload-gist";
     const response = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...(apiToken ? { "x-token-lens-token": apiToken } : {}) },
       body: JSON.stringify({ githubToken: token, deviceName: navigator.userAgent.split("/")[0] })
     });
 
@@ -544,10 +580,10 @@ async function importFromGist() {
 
   try {
     const apiToken = sessionStorage.getItem(API_TOKEN_KEY);
-    const url = `/api/sync/download-gist${apiToken ? `?token=${encodeURIComponent(apiToken)}` : ""}`;
+    const url = "/api/sync/download-gist";
     const response = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...(apiToken ? { "x-token-lens-token": apiToken } : {}) },
       body: JSON.stringify({ gistId: gistId, githubToken: token || undefined })
     });
 
@@ -576,4 +612,5 @@ $("#themeToggle").addEventListener("click", () => {
 
 if (localStorage.getItem(THEME_KEY) === "dark") document.body.classList.add("dark");
 loadRealUsage();
-setInterval(loadRealUsage, 30000);
+setInterval(() => { if (!document.hidden) loadRealUsage(); }, 30000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) loadRealUsage(); });

@@ -18,8 +18,9 @@
   },
   "scripts": {
     "start": "node server.js",
-    "check": "node --check server.js && node --check sessions.js && node --check limits.js && node --check pricing.js && node --check app.js && node --check data.js && node --check chart.js && node --check table.js && node --check notifications.js",
-    "test": "node --test"
+    "check": "node --check server.js && node --check sessions.js && node --check limits.js && node --check pricing.js && node --check gist.js && node --check app.js && node --check data.js && node --check chart.js && node --check table.js && node --check export.js && node --check notifications.js && node --check scripts/benchmark-scan.js",
+    "test": "node --test",
+    "benchmark": "node scripts/benchmark-scan.js"
   },
   "keywords": [
     "codex",
