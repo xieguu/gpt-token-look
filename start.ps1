@@ -35,7 +35,8 @@ if ($port -ne 0) {
 $logPath = Join-Path $env:TEMP "codex-token-lens-startup.log"
 $errorPath = Join-Path $env:TEMP "codex-token-lens-startup.err.log"
 Remove-Item -LiteralPath $logPath, $errorPath -Force -ErrorAction SilentlyContinue
-$process = Start-Process -FilePath $node.Source -ArgumentList "server.js" -WorkingDirectory $PSScriptRoot -WindowStyle Hidden -RedirectStandardOutput $logPath -RedirectStandardError $errorPath -PassThru
+$serverPath = Join-Path $PSScriptRoot "server.js"
+$process = Start-Process -FilePath $node.Source -ArgumentList ('"{0}"' -f $serverPath) -WorkingDirectory $PSScriptRoot -WindowStyle Hidden -RedirectStandardOutput $logPath -RedirectStandardError $errorPath -PassThru
 
 $url = $null
 for ($attempt = 0; $attempt -lt 50 -and -not $url; $attempt++) {
@@ -48,6 +49,10 @@ for ($attempt = 0; $attempt -lt 50 -and -not $url; $attempt++) {
 }
 
 if (-not $url) {
+  if (-not $process.HasExited) {
+    Stop-Process -InputObject $process -ErrorAction Stop
+    $process.WaitForExit()
+  }
   $details = @()
   if (Test-Path -LiteralPath $errorPath) { $details += Get-Content -LiteralPath $errorPath -Raw }
   if (Test-Path -LiteralPath $logPath) { $details += Get-Content -LiteralPath $logPath -Raw }
@@ -55,4 +60,6 @@ if (-not $url) {
 }
 
 Write-Host "[Token Lens] 已启动：$url" -ForegroundColor Green
+Write-Host "[Token Lens] Auto-stop after the last dashboard or popup closes (15 seconds by default)."
+Write-Host ("[Token Lens] Stop: " + (Join-Path $PSScriptRoot "stop.cmd"))
 if ($env:TOKEN_LENS_NO_BROWSER -ne "1") { Start-Process $url }

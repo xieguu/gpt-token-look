@@ -14,6 +14,11 @@ if (tokenFromUrl) {
   history.replaceState(null, "", `${cleanUrl.pathname}${cleanUrl.search}${cleanUrl.hash}`);
 }
 
+const pageConnection = TokenLensData.createPageConnection(requestApi, {
+  getToken: () => sessionStorage.getItem(API_TOKEN_KEY),
+  onError: showConnectionError
+});
+
 function localDateIso(date = new Date()) {
   return TokenLensData.localDateIso(date);
 }
@@ -372,6 +377,15 @@ function setConnectionStatus(kind, message) {
   status.lastChild.textContent = ` ${message}`;
 }
 
+function showConnectionError(error) {
+  state.error = error.message;
+  setConnectionStatus("error", "Connection failed");
+  $("#lastUpdated").textContent = error.message;
+  $("#errorBanner").style.display = "flex";
+  $("#errorBanner").querySelector("#errorMsg").textContent = error.message;
+  renderSessionTable();
+}
+
 async function loadRealUsage() {
   if (state.loading) return;
   state.loading = true;
@@ -380,6 +394,7 @@ async function loadRealUsage() {
   $("#errorBanner").style.display = "none";
   setConnectionStatus("loading", "Reading Codex");
   try {
+    await pageConnection.connect();
     const token = sessionStorage.getItem(API_TOKEN_KEY);
     const data = await TokenLensData.fetchUsage(requestApi, token);
     state.sessions = [...(data.sessions || [])].sort((first, second) => String(second.updatedAt).localeCompare(String(first.updatedAt)));
@@ -401,12 +416,7 @@ async function loadRealUsage() {
     }
     render();
   } catch (error) {
-    state.error = error.message;
-    setConnectionStatus("error", "Connection failed");
-    $("#lastUpdated").textContent = error.message;
-    $("#errorBanner").style.display = "flex";
-    $("#errorBanner").querySelector("#errorMsg").textContent = error.message;
-    renderSessionTable();
+    showConnectionError(error);
   } finally {
     state.loading = false;
     $("#refreshButton").classList.remove("loading");
@@ -619,3 +629,5 @@ if (localStorage.getItem(THEME_KEY) === "dark") document.body.classList.add("dar
 loadRealUsage();
 setInterval(() => { if (!document.hidden) loadRealUsage(); }, 30000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) loadRealUsage(); });
+window.addEventListener("pagehide", () => pageConnection.disconnect());
+window.addEventListener("pageshow", (event) => { if (event.persisted) loadRealUsage(); });

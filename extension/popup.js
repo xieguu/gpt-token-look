@@ -3,6 +3,7 @@ const integer = new Intl.NumberFormat("zh-CN");
 const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 4 });
 const element = (identifier) => document.getElementById(identifier);
 let pending = false;
+const pageConnection = TokenLensData.createPageConnection(TokenLensExtension.request, { onError: showError });
 
 function showError(error) {
   element("errorMessage").textContent = error.message;
@@ -56,6 +57,7 @@ async function refresh() {
   element("error").hidden = true;
   element("connectionStatus").textContent = "正在读取本地用量…";
   try {
+    await pageConnection.connect();
     const data = await TokenLensData.fetchUsage(TokenLensExtension.request);
     if (!Array.isArray(data.sessions)) throw new Error("本地服务返回了无效的会话数据。");
     if (!data.available) throw new Error("本地服务已连接，但未找到 Codex 会话目录。");
@@ -95,5 +97,5 @@ element("settings").addEventListener("click", () => chrome.runtime.openOptionsPa
 element("openDashboard").addEventListener("click", () => chrome.tabs.create({ url: chrome.runtime.getURL("dashboard.html") }).catch(showError));
 const refreshTimer = setInterval(() => { if (!document.hidden) refresh(); }, 30000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
-window.addEventListener("pagehide", () => clearInterval(refreshTimer), { once: true });
+window.addEventListener("pagehide", () => { clearInterval(refreshTimer); pageConnection.disconnect(); }, { once: true });
 refresh();

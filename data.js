@@ -99,6 +99,59 @@
     return data;
   }
 
+  function createPageConnection(fetchImpl, { getToken = () => null, onError }) {
+    let connection = null;
+
+    async function readConnection(response) {
+      const reader = response.body.getReader();
+      try {
+        while (!(await reader.read()).done) {}
+        throw new Error("Page connection closed. Restart Token Lens and refresh the page.");
+      } finally {
+        reader.releaseLock();
+      }
+    }
+
+    function connect() {
+      if (connection) return connection.ready;
+      const current = { controller: new AbortController(), ready: null };
+      connection = current;
+      current.ready = (async () => {
+        const token = getToken();
+        const response = await fetchImpl("/api/client", {
+          cache: "no-store",
+          headers: token ? { "x-token-lens-token": token } : {},
+          signal: current.controller.signal
+        });
+        if (!response.ok) {
+          const data = await response.json();
+          throw new Error(data.error || `HTTP ${response.status}`);
+        }
+        if (!response.body || !response.headers.get("content-type")?.startsWith("text/event-stream")) {
+          throw new Error("The local service did not provide a page lifecycle connection.");
+        }
+        readConnection(response).catch((error) => {
+          if (connection !== current) return;
+          connection = null;
+          if (!current.controller.signal.aborted) onError(error);
+        });
+      })().catch((error) => {
+        if (connection === current) connection = null;
+        current.controller.abort();
+        throw error;
+      });
+      return current.ready;
+    }
+
+    function disconnect() {
+      const current = connection;
+      connection = null;
+      if (current) current.controller.abort();
+    }
+
+    return { connect, disconnect };
+  }
+
   async function updatePricing(fetchImpl, token) {
     const response = await fetchImpl("/api/pricing/update", { method: "POST", headers: token ? { "x-token-lens-token": token } : {} });
     const data = await response.json();
@@ -124,5 +177,5 @@
     return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
   }
 
-  return { asDate, fetchUsage, filterSessions, localDateIso, localDateFromSession, pricingStatus, rateLimitSource, relativeTime, serializeExport, summarizeSessions, updatePricing };
+  return { asDate, createPageConnection, fetchUsage, filterSessions, localDateIso, localDateFromSession, pricingStatus, rateLimitSource, relativeTime, serializeExport, summarizeSessions, updatePricing };
 });

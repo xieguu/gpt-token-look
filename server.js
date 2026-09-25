@@ -23,6 +23,8 @@ const CACHE_TTL_MS = parseDurationMs(process.env.TOKEN_LENS_CACHE_TTL || "15m", 
 const SCAN_CONCURRENCY = parsePositiveInt(process.env.TOKEN_LENS_SCAN_CONCURRENCY, 3, 32);
 const API_TOKEN = process.env.TOKEN_LENS_API_TOKEN || "";
 const OFFICIAL_TIMEOUT_MS = Number(process.env.TOKEN_LENS_OFFICIAL_TIMEOUT_MS || 5000);
+const IDLE_TIMEOUT_MS = readTimeoutSetting("TOKEN_LENS_IDLE_TIMEOUT_MS", 15000, 0);
+const STARTUP_TIMEOUT_MS = readTimeoutSetting("TOKEN_LENS_STARTUP_TIMEOUT_MS", 60000, 1);
 
 const sessionsService = createSessionsService({ codexDir: CODEX_DIR, cacheDir: CACHE_DIR, cacheTtlMs: CACHE_TTL_MS, scanConcurrency: SCAN_CONCURRENCY });
 const pricingService = createPricingService({ appDir: APP_DIR, pricingFile: process.env.TOKEN_LENS_PRICING_FILE, pricesJson: process.env.TOKEN_LENS_PRICES_JSON || "", timeoutMs: OFFICIAL_TIMEOUT_MS });
@@ -33,6 +35,41 @@ const PUBLIC_FILES = new Set(["index.html", "styles.css", "app.js", "data.js", "
 const MAX_JSON_BODY_BYTES = 64 * 1024;
 let localScanPromise = null;
 let scanPromise = null;
+const activeResponses = new Set();
+const connections = new Set();
+let shutdownTimer = null;
+let browserConnected = false;
+
+function readTimeoutSetting(name, defaultValue, minimum) {
+  const raw = process.env[name];
+  const value = raw === undefined ? defaultValue : Number(raw);
+  if ((raw !== undefined && !/^\d+$/.test(raw)) || !Number.isInteger(value) || value < minimum || value > 2147483647) {
+    console.error(`${name} must be an integer between ${minimum} and 2147483647 milliseconds.`);
+    process.exit(1);
+  }
+  return value;
+}
+
+function scheduleShutdown(timeoutMs) {
+  clearTimeout(shutdownTimer);
+  if (IDLE_TIMEOUT_MS === 0 || activeResponses.size) return;
+  shutdownTimer = setTimeout(() => {
+    console.log("No open dashboard or active requests. Stopping Token Lens automatically.");
+    server.close();
+    for (const connection of connections) connection.destroy();
+  }, timeoutMs);
+}
+
+function trackResponse(response) {
+  clearTimeout(shutdownTimer);
+  activeResponses.add(response);
+  const complete = () => {
+    if (!activeResponses.delete(response)) return;
+    scheduleShutdown(browserConnected ? IDLE_TIMEOUT_MS : STARTUP_TIMEOUT_MS);
+  };
+  response.once("finish", complete);
+  response.once("close", complete);
+}
 
 function parsePositiveInt(value, fallback, maximum) {
   const parsed = Number(value);
@@ -167,6 +204,7 @@ function serveStatic(requestPath, response) {
 }
 
 const server = http.createServer(async (request, response) => {
+  trackResponse(response);
   let requestUrl;
   try { requestUrl = new URL(request.url, `http://${HOST}`); }
   catch { return sendJson(response, 400, { error: "Invalid request URL" }); }
@@ -198,6 +236,15 @@ const server = http.createServer(async (request, response) => {
     } catch (error) { return sendJson(response, error.statusCode || 502, { error: error.statusCode ? error.message : "Failed to download from Gist", detail: error.message }); }
   }
   if (request.method !== "GET") { response.writeHead(405, securityHeaders()); return response.end("Method not allowed"); }
+  if (requestPath === "/api/client") {
+    if (!isAuthorized(request, requestUrl)) return sendJson(response, 401, { error: "Invalid or missing Token Lens API token" });
+    browserConnected = true;
+    response.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store", ...securityHeaders() });
+    response.write(": connected\n\n");
+    const heartbeat = setInterval(() => response.write(": keepalive\n\n"), 15000);
+    response.once("close", () => clearInterval(heartbeat));
+    return;
+  }
   if (requestPath === "/api/export/all") {
     if (!isAuthorized(request, requestUrl)) return sendJson(response, 401, { error: "Invalid or missing Token Lens API token" });
     try {
@@ -240,4 +287,17 @@ const server = http.createServer(async (request, response) => {
 });
 
 server.on("error", (error) => { if (error.code === "EADDRINUSE") console.error(`Port ${PORT} is already in use. Token Lens may already be running, or set TOKEN_LENS_PORT to another port.`); else console.error(`Token Lens failed to start: ${error.message}`); process.exitCode = 1; });
-server.listen(PORT, HOST, () => { const address = server.address(); const activePort = typeof address === "object" ? address.port : PORT; console.log(`\nCodex Token Lens started: http://${HOST}:${activePort}`); console.log(`Data source: ${sessionsService.sessionsDir}`); console.log("Read-only token totals, models, limits, and session titles. Press Ctrl+C to stop.\n"); });
+server.on("connection", (connection) => {
+  connections.add(connection);
+  connection.once("close", () => connections.delete(connection));
+});
+server.on("close", () => clearTimeout(shutdownTimer));
+server.listen(PORT, HOST, () => {
+  const address = server.address();
+  const activePort = typeof address === "object" ? address.port : PORT;
+  console.log(`\nCodex Token Lens started: http://${HOST}:${activePort}`);
+  console.log(`Data source: ${sessionsService.sessionsDir}`);
+  console.log("Read-only token totals, models, limits, and session titles. Press Ctrl+C to stop.");
+  console.log(IDLE_TIMEOUT_MS === 0 ? "Automatic shutdown disabled.\n" : `Auto-stop: ${IDLE_TIMEOUT_MS}ms after the last page closes; ${STARTUP_TIMEOUT_MS}ms startup grace.\n`);
+  scheduleShutdown(STARTUP_TIMEOUT_MS);
+});

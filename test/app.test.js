@@ -36,16 +36,32 @@ test("immediate filter changes cancel a pending search render", async () => {
 test("automatic refresh pauses while hidden and resumes on visibility", async () => {
   const app = await createApp();
   assert.equal(app.requests.length, 1);
+  assert.equal(app.pageRequests.length, 1);
   assert.equal(app.intervals[0].delay, 30000);
   app.document.hidden = true;
   app.intervals[0].callback();
   app.document.listeners.visibilitychange();
   await flush();
   assert.equal(app.requests.length, 1);
+  assert.equal(app.pageRequests[0].options.signal.aborted, false);
   app.document.hidden = false;
   app.document.listeners.visibilitychange();
   await flush();
   assert.equal(app.requests.length, 2);
+  assert.equal(app.pageRequests.length, 1);
+});
+
+test("pagehide releases the page connection and bfcache restoration reconnects", async () => {
+  const app = await createApp();
+  app.context.window.listeners.pagehide();
+  assert.equal(app.pageRequests[0].options.signal.aborted, true);
+  app.context.window.listeners.pageshow({ persisted: true });
+  await flush();
+  assert.equal(app.pageRequests.length, 2);
+  assert.equal(app.pageRequests[1].options.signal.aborted, false);
+  assert.equal(app.pageRequests[1].options.headers["x-token-lens-token"], "fixture-api-token");
+  assert.equal(vm.runInContext("state.error", app.context), null);
+  app.context.window.listeners.pagehide();
 });
 
 test("export and synchronization send API tokens in headers, never in URLs", async () => {
@@ -66,6 +82,7 @@ test("the packaged dashboard routes usage, exports, sync, and pricing through th
   app.context.window.location.protocol = "chrome-extension:";
   app.context.TokenLensExtension = { request(url, options) { forwarded.push(url); return originalFetch(url, options); } };
   app.context.fetch = () => { throw new Error("Extension requests must not use page-relative fetch"); };
+  vm.runInContext("pageConnection.disconnect()", app.context);
   await vm.runInContext("loadRealUsage()", app.context);
   await vm.runInContext("exportAllSessions()", app.context);
   app.prompts.push("fixture-github-token");
@@ -73,7 +90,7 @@ test("the packaged dashboard routes usage, exports, sync, and pricing through th
   app.prompts.push("abc123", "");
   await vm.runInContext("importFromGist()", app.context);
   await vm.runInContext("updatePricing()", app.context);
-  assert.deepEqual(forwarded, ["/api/usage", "/api/export/all", "/api/sync/upload-gist", "/api/sync/download-gist", "/api/pricing/update", "/api/usage"]);
+  assert.deepEqual(forwarded, ["/api/client", "/api/usage", "/api/export/all", "/api/sync/upload-gist", "/api/sync/download-gist", "/api/pricing/update", "/api/usage"]);
   assert.equal(vm.runInContext("state.error", app.context), null);
 });
 
@@ -252,6 +269,7 @@ async function createApp(suppliedSessions) {
     addEventListener(name, callback) { this.listeners[name] = callback; }
   };
   const requests = [];
+  const pageRequests = [];
   const renders = [];
   const chartRenders = [];
   const timeouts = new Map();
@@ -266,7 +284,7 @@ async function createApp(suppliedSessions) {
   ];
   const context = vm.createContext({
     document, console, URL, URLSearchParams, Blob, Date,
-    window: { location: { search: "", href: "http://127.0.0.1:4173/" } },
+    window: { location: { search: "", href: "http://127.0.0.1:4173/" }, listeners: {}, addEventListener(name, callback) { this.listeners[name] = callback; } },
     navigator: { userAgent: "fixture-browser/1", clipboard: null },
     sessionStorage: { getItem() { return "fixture-api-token"; } }, localStorage: { getItem() { return null; }, setItem() {} },
     prompt() { return prompts.shift(); }, alert() {},
@@ -278,6 +296,11 @@ async function createApp(suppliedSessions) {
     TokenLensTable: { render(options) { renders.push(options); return table.paginate(options.sessions, options.page); }, emptyRow: table.emptyRow },
     TokenLensNotifications: { renderAlerts() {}, requestPermission() {} },
     async fetch(url, options) {
+      if (url === "/api/client") {
+        pageRequests.push({ url, options });
+        const stream = new ReadableStream({ start(controller) { options.signal.addEventListener("abort", () => controller.error(options.signal.reason), { once: true }); } });
+        return new Response(stream, { headers: { "content-type": "text/event-stream" } });
+      }
       requests.push({ url, options });
       const payload = url === "/api/usage"
         ? { sessions, available: true, sessionCount: sessions.length, scannedAt: today.toISOString(), source: "fixture", rateLimits: null }
@@ -289,7 +312,7 @@ async function createApp(suppliedSessions) {
   vm.runInContext(source, context, { filename: "app.js" });
   await flush();
   assert.equal(vm.runInContext("state.error", context), null);
-  return { context, document, element, requests, renders, chartRenders, timeouts, intervals, prompts, granularityButtons };
+  return { context, document, element, requests, pageRequests, renders, chartRenders, timeouts, intervals, prompts, granularityButtons };
 }
 
 function flush() {
