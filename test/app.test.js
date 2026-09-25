@@ -59,6 +59,24 @@ test("export and synchronization send API tokens in headers, never in URLs", asy
   for (const request of app.requests) assert.equal(request.options.headers["x-token-lens-token"], "fixture-api-token");
 });
 
+test("the packaged dashboard routes usage, exports, sync, and pricing through the extension client", async () => {
+  const app = await createApp();
+  const originalFetch = app.context.fetch;
+  const forwarded = [];
+  app.context.window.location.protocol = "chrome-extension:";
+  app.context.TokenLensExtension = { request(url, options) { forwarded.push(url); return originalFetch(url, options); } };
+  app.context.fetch = () => { throw new Error("Extension requests must not use page-relative fetch"); };
+  await vm.runInContext("loadRealUsage()", app.context);
+  await vm.runInContext("exportAllSessions()", app.context);
+  app.prompts.push("fixture-github-token");
+  await vm.runInContext("uploadToGist()", app.context);
+  app.prompts.push("abc123", "");
+  await vm.runInContext("importFromGist()", app.context);
+  await vm.runInContext("updatePricing()", app.context);
+  assert.deepEqual(forwarded, ["/api/usage", "/api/export/all", "/api/sync/upload-gist", "/api/sync/download-gist", "/api/pricing/update", "/api/usage"]);
+  assert.equal(vm.runInContext("state.error", app.context), null);
+});
+
 test("refresh errors keep the table's eight-column layout", async () => {
   const app = await createApp();
   app.context.fetch = async () => ({ ok: false, status: 500, async json() { return { error: "fixture failure" }; } });
@@ -263,6 +281,7 @@ async function createApp(suppliedSessions) {
       requests.push({ url, options });
       const payload = url === "/api/usage"
         ? { sessions, available: true, sessionCount: sessions.length, scannedAt: today.toISOString(), source: "fixture", rateLimits: null }
+        : url === "/api/pricing/update" ? { ok: true, pricing: { models: [], updatedAt: today.toISOString() } }
         : { ok: true, sessions: [], gistId: "abc123", gistUrl: "https://gist.github.com/fixture/abc123", importedCount: 0 };
       return { ok: true, async json() { return payload; } };
     }

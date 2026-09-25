@@ -22,6 +22,7 @@
 - 支持会话名称/模型搜索、Today 的小时粒度、与上一周期的 token/成本对比和单会话明细复制
 - 会话列表每页 50 条，可通过 Previous / Next 浏览全部筛选结果；筛选后回到第一页，自动刷新保留并校正当前页码
 - 可选本地费用/额度告警和浏览器通知
+- Chrome / Edge 浏览器扩展：工具栏用量概览、连接设置，以及复用完整功能的仪表盘标签页
 - 只读取本地统计字段，不读取会话正文、工具输出、`auth.json` 或 API key
 
 ## 快速开始
@@ -50,6 +51,49 @@ Linux/macOS 也可以运行：
 ```bash
 ./start.sh
 ```
+
+## 浏览器扩展（Chrome / Edge）
+
+提供 Manifest V3 扩展。工具栏弹窗展示今日 Token、API 等价费用、剩余额度和最近 3 个会话；点击「打开完整仪表盘」可在扩展标签页使用筛选、图表、分页、导出和 Gist 同步。
+
+**扩展仍需要本地 Node.js 服务。** 浏览器不能直接读取 `~/.codex/sessions`；安装扩展不会自动启动服务，也不会修改浏览器或系统启动配置。
+
+### 安装
+
+**直接安装打包版：** 到 [GitHub Releases](https://github.com/xieguu/gpt-token-look/releases) 下载 `gpt-token-look-extension.zip`，解压后在浏览器中加载包含 `manifest.json` 的目录。安装包只有扩展前端；本地服务需使用本仓库源码，在项目目录运行 `npm ci`、`npm start`。无需自行构建扩展。
+
+**从源码构建：** 在项目目录运行：
+
+```bash
+npm ci
+npm run build:extension
+npm start
+```
+
+保持服务运行，然后：
+
+1. Chrome 打开 `chrome://extensions`，或 Edge 打开 `edge://extensions`。
+2. 开启「开发者模式」，点击「加载已解压的扩展程序」。
+3. 选择本项目生成的 **`dist/extension`** 目录，不是源码 `extension` 目录。
+4. 将 Token Lens 固定到工具栏，点击图标查看用量。
+5. 如修改过服务端口或配置了 `TOKEN_LENS_API_TOKEN`，点击扩展的「设置」，填写对应值并「保存并测试连接」。
+
+构建同时生成 `dist/gpt-token-look-extension.zip`，可分发或用于商店提交。手动安装 ZIP 时先解压，再加载包含 `manifest.json` 的目录。ZIP 仅包含扩展资源，不包含 Node.js 服务；其他设备仍需启动自己的本地服务。此流程不涉及商店上架或 `.crx` 签名。
+
+运行链路：`本机 Codex 会话 JSONL → Node.js 服务 /api/usage → 扩展弹窗或仪表盘`。因此关闭本地服务后，扩展会显示连接失败；它不是在任意网页里注入的悬浮窗，也不会读取网页中的 ChatGPT 对话。
+
+### 连接与权限
+
+- 地址固定为 `http://127.0.0.1`，默认端口 `4173`；自定义端口必须在 `1–65535` 范围内。
+- 只申请 `storage` 和 `http://127.0.0.1/*` 权限，没有网页内容脚本，也不申请浏览历史或任意网站访问权限。
+- 端口和可选 API Token 保存在此浏览器的 `chrome.storage.local`，不使用账号同步存储。Token 只通过 `x-token-lens-token` 请求头发送，不进入页面或 API 请求 URL。
+- 请求禁止自动跟随重定向，不携带 Cookie；默认 15 秒超时。服务关闭、认证失败或数据错误时显示明确错误，不把旧统计显示为新结果。
+- 弹窗打开时每 30 秒刷新；关闭弹窗后不在后台轮询。完整仪表盘沿用页面隐藏时暂停刷新的机制。
+- 扩展仪表盘直接复用项目的前端文件和本地 API，既有网页入口 `http://127.0.0.1:4173` 不变。
+
+### 更新
+
+源码修改后重新执行 `npm run build:extension`，在浏览器扩展管理页点击 Token Lens 的「重新加载」，并重新打开仪表盘标签页。CI 会构建安装包，Node.js 24 作业会上传名为 `codex-token-lens-extension` 的构建产物。
 
 ## 配置
 
@@ -301,11 +345,15 @@ GET http://127.0.0.1:4173/api/sessions/{sessionId}/full
 ## 开发与测试
 
 ```bash
+npm ci
 npm run check
 npm test
+npm run build:extension
 ```
 
 CI 会在 Node.js 18、20、22、24 上运行语法检查和测试。
+
+扩展回归覆盖连接配置校验、仅本机访问、请求头认证、超时与错误传播、仪表盘接口适配、资源完整性、最小权限和 ZIP 可复现构建。ZIP 打包复用 `fflate`，仅为开发依赖，未增加服务端运行时依赖。
 
 回归测试使用临时 JSONL 数据和模拟 Gist 服务，不读取真实 Codex 会话，也不向 GitHub 上传数据。覆盖缓存及汇总复用与失效、并发扫描、读取错误传播、UTF-8 跨块与末行处理、冷启动导出、官方慢查询与本地导出隔离、分块请求、请求体限制、静态文件访问边界、分页与导出范围、局部图表重绘、剪贴板失败反馈，以及搜索防抖和后台暂停刷新。
 

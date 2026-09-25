@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Codex Token Lens</title>
+  <link rel="stylesheet" href="./extension.css">
+</head>
+<body class="popup">
+  <header class="header">
+    <div class="brand"><img src="./icons/48.png" width="34" height="34" alt=""><div><strong>Token Lens</strong><span>CODEX · LOCAL USAGE</span></div></div>
+    <div class="actions"><button id="refresh" class="quiet-button" type="button" aria-label="刷新用量" title="刷新用量">↻</button><button id="settings" class="quiet-button" type="button">设置</button></div>
+  </header>
+  <main id="overview" aria-busy="true">
+    <div class="connection"><span id="connectionStatus" role="status">正在连接本地服务…</span><span class="local-badge">LOCAL</span></div>
+    <section id="error" class="error" role="alert" hidden><strong id="errorMessage"></strong><p>检查本地服务、端口及 API Token，然后重试。启动服务：<code>npm start</code></p></section>
+    <section class="usage-card" aria-label="今日用量">
+      <div class="section-heading"><span>今日总用量</span><span id="todayDate"></span></div>
+      <div class="token-total"><strong id="totalTokens">—</strong><span>tokens</span></div>
+      <div class="metrics"><div><span>API 等价费用</span><strong id="costUsd">—</strong></div><div><span>今日会话</span><strong id="sessionCount">—</strong></div></div>
+      <p id="pricingNote" class="subtle">估算值，不是订阅账单</p>
+    </section>
+    <section class="limits" aria-label="剩余额度">
+      <div class="section-heading"><h2>剩余额度</h2><span id="limitSource">暂无快照</span></div>
+      <div class="limit-row"><div><span>PRIMARY</span><strong id="primaryRemaining">—</strong></div><progress id="primaryProgress" max="100" value="0" aria-label="Primary 剩余额度"></progress></div>
+      <div class="limit-row"><div><span>SECONDARY</span><strong id="secondaryRemaining">—</strong></div><progress id="secondaryProgress" max="100" value="0" aria-label="Secondary 剩余额度"></progress></div>
+      <p id="limitFreshness" class="subtle">暂无额度数据</p>
+    </section>
+    <section class="recent" aria-label="最近会话"><div class="section-heading"><h2>最近会话</h2><span>最近 3 条</span></div><ul id="recentSessions"><li class="empty">等待连接</li></ul></section>
+  </main>
+  <footer class="popup-footer"><button id="openDashboard" class="primary-button" type="button">打开完整仪表盘 <span aria-hidden="true">↗</span></button><span id="lastUpdated" class="subtle">仅连接本机，不读取当前网页</span></footer>
+  <script src="./data.js"></script>
+  <script src="./client.js"></script>
+  <script src="./popup.js"></script>
+</body>
+</html>

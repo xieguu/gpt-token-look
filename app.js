@@ -1,6 +1,11 @@
 const THEME_KEY = "codex-theme";
 const API_TOKEN_KEY = "codex-token-lens-api-token";
 
+function requestApi(url, options) {
+  if (window.location.protocol === "chrome-extension:") return TokenLensExtension.request(url, options);
+  return fetch(url, options);
+}
+
 const tokenFromUrl = new URLSearchParams(window.location.search).get("token");
 if (tokenFromUrl) {
   sessionStorage.setItem(API_TOKEN_KEY, tokenFromUrl);
@@ -306,7 +311,7 @@ async function updatePricing() {
   status.textContent = "Fetching official pricing page…";
   try {
     const token = sessionStorage.getItem(API_TOKEN_KEY);
-    const data = await TokenLensData.updatePricing(fetch, token);
+    const data = await TokenLensData.updatePricing(requestApi, token);
     const count = data.pricing?.models?.length || 0;
     state.pricing = data.pricing || state.pricing;
     status.textContent = `已从官方页面更新 ${count} 个模型价格，更新日期 ${TokenLensData.localDateIso(data.pricing.updatedAt)}。`;
@@ -376,7 +381,7 @@ async function loadRealUsage() {
   setConnectionStatus("loading", "Reading Codex");
   try {
     const token = sessionStorage.getItem(API_TOKEN_KEY);
-    const data = await TokenLensData.fetchUsage(fetch, token);
+    const data = await TokenLensData.fetchUsage(requestApi, token);
     state.sessions = [...(data.sessions || [])].sort((first, second) => String(second.updatedAt).localeCompare(String(first.updatedAt)));
     populateModelFilter();
     state.rateLimits = data.rateLimits;
@@ -498,7 +503,7 @@ function setupExportButtons() {
       try {
         const token = sessionStorage.getItem(API_TOKEN_KEY);
         const url = `/api/sessions/${encodeURIComponent(sessionId)}/full`;
-        const response = await fetch(url, { cache: "no-store", headers: token ? { "x-token-lens-token": token } : {} });
+        const response = await requestApi(url, { cache: "no-store", headers: token ? { "x-token-lens-token": token } : {} });
         if (!response.ok) throw new Error(`Failed to fetch session: ${response.statusText}`);
         const sessionData = await response.json();
         const markdown = TokenLensExport.formatSessionToMarkdown(sessionData);
@@ -522,7 +527,7 @@ async function exportAllSessions() {
   const token = sessionStorage.getItem(API_TOKEN_KEY);
   const url = "/api/export/all";
   try {
-    const response = await fetch(url, { cache: "no-store", headers: token ? { "x-token-lens-token": token } : {} });
+    const response = await requestApi(url, { cache: "no-store", headers: token ? { "x-token-lens-token": token } : {} });
     if (!response.ok) throw new Error(`Export failed: ${response.statusText}`);
     const data = await response.json();
     const dateStr = localDateIso();
@@ -544,7 +549,7 @@ async function uploadToGist() {
   try {
     const apiToken = sessionStorage.getItem(API_TOKEN_KEY);
     const url = "/api/sync/upload-gist";
-    const response = await fetch(url, {
+    const response = await requestApi(url, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...(apiToken ? { "x-token-lens-token": apiToken } : {}) },
       body: JSON.stringify({ githubToken: token, deviceName: navigator.userAgent.split("/")[0] })
@@ -581,7 +586,7 @@ async function importFromGist() {
   try {
     const apiToken = sessionStorage.getItem(API_TOKEN_KEY);
     const url = "/api/sync/download-gist";
-    const response = await fetch(url, {
+    const response = await requestApi(url, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...(apiToken ? { "x-token-lens-token": apiToken } : {}) },
       body: JSON.stringify({ gistId: gistId, githubToken: token || undefined })

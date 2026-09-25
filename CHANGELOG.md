@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Added a Chrome/Edge Manifest V3 extension with a toolbar usage overview, connection settings, and a full dashboard tab reusing the existing frontend.
+- Added a loopback-only extension client with local settings, header-only authentication, timeout handling, and redirect/cookie isolation.
+- Added reproducible extension ZIP builds using the development-only `fflate` dependency, installation docs, regression tests, and CI artifacts.
 - Reused normalized and sorted session summaries on unchanged scans, with file/title invalidation and a `summaryReused` diagnostic.
 - Decoupled local exports and Gist uploads from official account queries while preserving token totals and pricing.
 - Limited chart-granularity changes to chart redraws, preserving pagination and applying pending search filters first.

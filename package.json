@@ -18,9 +18,10 @@
   },
   "scripts": {
     "start": "node server.js",
-    "check": "node --check server.js && node --check sessions.js && node --check limits.js && node --check pricing.js && node --check gist.js && node --check app.js && node --check data.js && node --check chart.js && node --check table.js && node --check export.js && node --check notifications.js && node --check scripts/benchmark-scan.js",
+    "check": "node --check server.js && node --check sessions.js && node --check limits.js && node --check pricing.js && node --check gist.js && node --check app.js && node --check data.js && node --check chart.js && node --check table.js && node --check export.js && node --check notifications.js && node --check scripts/benchmark-scan.js && node --check scripts/build-extension.js && node --check extension/client.js && node --check extension/popup.js && node --check extension/options.js",
     "test": "node --test",
-    "benchmark": "node scripts/benchmark-scan.js"
+    "benchmark": "node scripts/benchmark-scan.js",
+    "build:extension": "node scripts/build-extension.js"
   },
   "keywords": [
     "codex",
@@ -28,5 +29,8 @@
     "dashboard",
     "openai",
     "local-first"
-  ]
+  ],
+  "devDependencies": {
+    "fflate": "0.8.3"
+  }
 }

@@ -23,9 +23,24 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - name: Install development dependencies
+        run: npm ci --ignore-scripts
 
       - name: Check syntax
         run: npm run check
 
       - name: Run tests
         run: npm test
+
+      - name: Build browser extension
+        run: npm run build:extension
+
+      - name: Upload browser extension
+        if: matrix.node-version == 24
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-token-lens-extension
+          path: dist/gpt-token-look-extension.zip
+          if-no-files-found: error
